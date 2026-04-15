@@ -81,15 +81,30 @@ if [ ! -x "$CLAUDE_PATH" ]; then
 fi
 echo "✓ claude: $CLAUDE_PATH"
 
-# ── 6. 봇 토큰 입력 (블러 처리) ────────────────────────────────
+# ── 6. 봇 토큰 입력 (글자마다 * 표시) ──────────────────────────
 echo
 echo "── Telegram Bot 설정 ────────────────────────"
-echo "@BotFather 에서 발급받은 토큰을 입력하세요."
-stty -echo
+echo "@BotFather 에서 발급받은 토큰을 입력/붙여넣기 하세요."
 printf "Bot Token: "
-read BOT_TOKEN
-stty echo
-echo "(입력됨: ${BOT_TOKEN:0:10}****...)"
+
+BOT_TOKEN=""
+# -s: 화면에 표시 안 함, -r: 백슬래시 raw, -n1: 한 글자씩
+while IFS= read -r -s -n 1 ch; do
+    # Enter = 빈 입력
+    [ -z "$ch" ] && break
+    # Backspace (0x7f)
+    if [ "$ch" = $'\x7f' ]; then
+        if [ -n "$BOT_TOKEN" ]; then
+            BOT_TOKEN="${BOT_TOKEN%?}"
+            printf '\b \b'
+        fi
+        continue
+    fi
+    BOT_TOKEN+="$ch"
+    printf '*'
+done
+echo
+echo "(입력됨: ${#BOT_TOKEN}자, 앞 10자: ${BOT_TOKEN:0:10}...)"
 
 if [ -z "$BOT_TOKEN" ]; then
     echo "✗ 토큰 필수"
