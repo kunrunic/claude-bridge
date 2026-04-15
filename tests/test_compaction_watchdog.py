@@ -85,9 +85,62 @@ def test_has_compaction_detects_crunched_summary():
 
 
 def test_has_compaction_ignores_old_scrolled_out():
-    # 40줄 스캔 범위 밖이면 감지 안 됨 (오래된 압축 흔적)
+    # 스캔 범위 밖이면 감지 안 됨 (오래된 압축 흔적)
     pane = "✻ Crunched for 1m 00s\n" + "\n".join(["노이즈"] * 100) + "\n❯ \n"
     assert not bot.has_compaction(pane)
+
+
+def test_pre_busy_compact_snapshot_suppresses_false_recovery():
+    """busy 진입 시 이미 있던 Crunched 마커는 saw_compaction을 트리거하지 않아야 한다.
+
+    회귀 방지: 매 메시지마다 'ℹ️ 컨텍스트 압축 후 응답 복구'가 뜨는 버그.
+    """
+    br = bot.Bridge()
+    br.saw_compaction = False
+
+    # busy 진입 시점: 스크롤백에 이전 /compact 흔적이 있음
+    pane_at_entry = (
+        "❯ 이전 요청\n"
+        "⏺ 이전 응답\n"
+        "✻ Crunched for 2m 00s\n"   # ← 잔존 마커
+        "❯ 새 요청\n"
+        "⏺ 생각 중…\n"
+    )
+    br._pre_busy_had_compact = bot.has_compaction(pane_at_entry)
+    assert br._pre_busy_had_compact is True
+
+    # busy 지속 중에도 같은 마커가 여전히 보임 (스크롤백에 남아있음)
+    pane_during_busy = pane_at_entry + "\n⏺ 추가 내용\n"
+
+    # 실제 monitor의 분기 조건을 그대로 검증
+    if (
+        not br.saw_compaction
+        and bot.has_compaction(pane_during_busy)
+        and not br._pre_busy_had_compact
+    ):
+        br.saw_compaction = True
+
+    assert br.saw_compaction is False, "잔존 마커는 saw_compaction을 트리거하면 안 됨"
+
+
+def test_new_compaction_during_busy_still_detected():
+    """busy 진입 시 마커가 없었다면, 도중에 새로 나타날 때 감지되어야 한다."""
+    br = bot.Bridge()
+    br.saw_compaction = False
+
+    pane_at_entry = "❯ 요청\n⏺ 생각 중…\n"
+    br._pre_busy_had_compact = bot.has_compaction(pane_at_entry)
+    assert br._pre_busy_had_compact is False
+
+    pane_during_busy = pane_at_entry + "✻ Compacting conversation...\n"
+    if (
+        not br.saw_compaction
+        and bot.has_compaction(pane_during_busy)
+        and not br._pre_busy_had_compact
+    ):
+        br.saw_compaction = True
+
+    assert br.saw_compaction is True
 
 
 def test_has_context_limit():

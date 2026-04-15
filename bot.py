@@ -33,7 +33,7 @@ MAX_MSG_CHARS       = 3500  # Telegram 메시지 최대 길이
 BUSY_CHECK_TAIL     = 20    # busy 감지 꼬리 줄 수
 BUSY_TIMEOUT_SEC    = 600   # busy 최대 지속 시간 — 초과 시 watchdog 발동 (P0)
 BUSY_STUCK_SEC      = 300   # pane 내용 무변화 지속 시 stuck 판정 (P2)
-COMPACT_SCAN_LINES  = 40    # 압축 이벤트 감지 스캔 범위
+COMPACT_SCAN_LINES  = 8     # 압축 이벤트 감지 스캔 범위 (현재 활성 영역만)
 
 # -- 설정 -----------------------------------------------------------------------
 
@@ -614,6 +614,7 @@ class Bridge:
         self.busy_started_at: float | None = None
         self.last_status_label = ""
         self.saw_compaction: bool = False       # P1: busy 도중 압축 감지 플래그
+        self._pre_busy_had_compact: bool = False # busy 진입 시점의 잔존 압축 마커 snapshot
         self.busy_pane_hash: str = ""            # P2: busy 중 pane 내용 hash
         self.busy_last_change_at: float | None = None  # P2: pane 마지막 변경 시각
         self.auto_compacting: bool = False       # Context limit 자동 /compact 진행 중
@@ -775,6 +776,9 @@ class Bridge:
                         self.busy_pane_hash = hashlib.md5(clean.encode()).hexdigest()
                         self.busy_last_change_at = time.time()
                         self.saw_compaction = False
+                        # 잔존 스크롤백의 Crunched/Compacting 마커로 오탐하지 않도록
+                        # busy 진입 시점의 상태를 snapshot — 이후 "새로 등장한 경우"에만 감지
+                        self._pre_busy_had_compact = has_compaction(clean)
                         label = busy_status(clean)
                         self.last_status_label = label
                         _log("AI-BUSY", label)
@@ -788,7 +792,13 @@ class Bridge:
                     # busy 지속: 상태 메시지 편집 + watchdog
                     if busy_now:
                         # P1: 압축 이벤트 감지 (한 번만 로그)
-                        if not self.saw_compaction and has_compaction(clean):
+                        # busy 진입 시점에 이미 있던 잔존 마커는 무시하고,
+                        # 이 cycle에서 '새로' 등장했을 때만 감지.
+                        if (
+                            not self.saw_compaction
+                            and has_compaction(clean)
+                            and not self._pre_busy_had_compact
+                        ):
                             self.saw_compaction = True
                             _log("AI-COMPACT", "compaction detected during busy")
 
@@ -880,6 +890,7 @@ class Bridge:
                                     pass
                             _log("AI-COMPACT-NOSEND", "response not found post-compact")
                         self.saw_compaction = False
+                        self._pre_busy_had_compact = False
                         self.auto_compacting = False
                         self.busy_pane_hash = ""
                         self.busy_last_change_at = None
