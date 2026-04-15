@@ -54,12 +54,20 @@ async def deny(update: Update):
     )
 
 # Claude Code 승인 프롬프트 감지 패턴
+# "Do you want to proceed" 가 정식 승인창 표식. ❯ 1. Yes 단독은 신뢰 프롬프트와 충돌하므로 사용 X
 APPROVAL_RE = re.compile(
-    r"[❯>]\s*1\.\s*Yes|Do you want to proceed|Do you want to|"
-    r"Allow\s+\w|Proceed\?|\(Y/n\)|\(y/N\)"
+    r"Do you want to proceed|"
+    r"Allow\s+\w+\s+to|Proceed\?|\(Y/n\)|\(y/N\)"
 )
-# 폴더 신뢰 프롬프트 (새 디렉토리 진입 시)
-TRUST_RE    = re.compile(r"Is this a project you created|trust this folder|Enter to confirm")
+# 폴더 신뢰 프롬프트 (새 디렉토리 진입 시 한 번 뜸)
+TRUST_RE    = re.compile(
+    r"Quick safety check|"
+    r"Is this a project you created|"
+    r"trust this folder|"
+    r"Yes, I trust|"
+    r"No, exit|"
+    r"Security guide"
+)
 # Claude가 "작업 중" 상태 - "esc to interrupt"만 신뢰 가능한 활성 신호
 # (Running/Compacting 등은 과거 로그에도 남아서 오탐 발생)
 BUSY_RE     = re.compile(r"esc to interrupt")
