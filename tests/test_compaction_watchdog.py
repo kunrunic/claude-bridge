@@ -152,6 +152,47 @@ def test_has_context_limit_negative():
     assert not bot.has_context_limit("❯ 일반 입력\n")
 
 
+def test_extract_response_blocks_splits_multiple():
+    pane = (
+        "❯ 요청\n"
+        "\n"
+        "⏺ Bash(git status)\n"
+        "  ⎿  On branch main\n"
+        "\n"
+        "⏺ Edit(bot.py)\n"
+        "  ⎿  1 file updated\n"
+        "\n"
+        "⏺ 최종 설명입니다.\n"
+        "  이어지는 내용\n"
+    )
+    blocks = bot.extract_response_blocks(pane)
+    assert len(blocks) == 3
+    assert blocks[0].startswith("⏺ Bash")
+    assert blocks[1].startswith("⏺ Edit")
+    assert blocks[2].startswith("⏺ 최종 설명")
+
+
+def test_extract_response_blocks_empty_when_no_response():
+    pane = "❯ 방금 입력\n"
+    assert bot.extract_response_blocks(pane) == []
+
+
+def test_extract_response_blocks_ignores_old_turns():
+    """이전 ❯ 턴의 ⏺은 포함하지 않아야 한다."""
+    pane = (
+        "❯ 이전 요청\n"
+        "⏺ 이전 응답\n"
+        "\n"
+        "❯ 새 요청\n"
+        "⏺ 새 응답 1\n"
+        "⏺ 새 응답 2\n"
+    )
+    blocks = bot.extract_response_blocks(pane)
+    assert len(blocks) == 2
+    assert "새 응답 1" in blocks[0]
+    assert "새 응답 2" in blocks[1]
+
+
 def test_busy_status_splits_claude_timer():
     pane = (
         "❯ 요청\n"

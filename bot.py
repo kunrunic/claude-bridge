@@ -260,8 +260,11 @@ def busy_status(text: str) -> tuple[str, str | None]:
             return label[:80], cc_sec
     return "작업 중", None
 
-def extract_last_response(text: str) -> str:
-    """화면 출력에서 Claude의 마지막 응답만 추출"""
+def _response_region(text: str) -> tuple[list[str], int]:
+    """응답 영역 경계 감지 → (lines, end_idx).
+
+    end_idx: 응답 영역 끝 (exclusive). 승인 박스/입력창 divider/Welcome 전.
+    """
     lines = text.splitlines()
 
     def is_divider(line: str) -> bool:
@@ -293,6 +296,13 @@ def extract_last_response(text: str) -> str:
     if divider_positions:
         end = min(end, min(divider_positions))
 
+    return lines, end
+
+
+def extract_last_response(text: str) -> str:
+    """화면 출력에서 Claude의 마지막 응답(마지막 ⏺ 블록)만 추출"""
+    lines, end = _response_region(text)
+
     # 마지막 ⏺ (Claude 응답 시작) 찾기
     start = -1
     for i in range(end - 1, -1, -1):
@@ -310,6 +320,38 @@ def extract_last_response(text: str) -> str:
             break
 
     return "\n".join(lines[start:end]).strip()
+
+
+def extract_response_blocks(text: str) -> list[str]:
+    """응답 영역 내 모든 ⏺ 블록을 순서대로 추출.
+
+    마지막 블록은 아직 스트리밍 중일 수 있음 (성장 중).
+    호출자가 블록 단위 dedup을 하거나 "마지막 제외" 정책을 적용하기 좋게 리스트로 반환.
+    """
+    lines, end = _response_region(text)
+
+    # 마지막 ❯ 사용자 입력 이후부터 end 사이에서 ⏺ 시작 위치 수집
+    user_prompt_idx = -1
+    for i in range(end - 1, -1, -1):
+        if lines[i].lstrip().startswith("❯ "):
+            user_prompt_idx = i
+            break
+    scan_start = user_prompt_idx + 1
+
+    starts = [
+        i for i in range(scan_start, end)
+        if lines[i].lstrip().startswith("⏺")
+    ]
+    if not starts:
+        return []
+
+    blocks: list[str] = []
+    for idx, s in enumerate(starts):
+        e = starts[idx + 1] if idx + 1 < len(starts) else end
+        block = "\n".join(lines[s:e]).rstrip()
+        if block:
+            blocks.append(block)
+    return blocks
 
 # -- 세션 락 (멀티 인스턴스 동시 resume 방지) ----------------------------------
 
@@ -895,26 +937,28 @@ class Bridge:
                             continue
 
                         # busy 중 ⏺ 블록 주기적 스트리밍 (bypass 모드 장시간 busy 대응)
-                        # BUSY_STREAM_SEC 마다 새 ⏺ 블록이 있으면 포워딩.
+                        # "완료된" 블록(=뒤에 다음 ⏺이 나타나 더 이상 성장하지 않는 블록)만
+                        # 전송. 마지막 블록은 아직 성장 중이므로 skip → busy 종료 시 SETTLE에서 처리.
                         should_stream = (
                             self.busy_last_stream_at is None
                             or now_ts - self.busy_last_stream_at >= BUSY_STREAM_SEC
                         )
                         if should_stream and not self.awaiting_approval:
                             self.busy_last_stream_at = now_ts
-                            stream_resp = extract_last_response(clean)
-                            if (stream_resp
-                                    and "⏺" in stream_resp
-                                    and stream_resp != self.last_sent
-                                    and not self._already_sent(stream_resp)):
-                                _log("AI→BOT", f"stream ({len(stream_resp)} chars)")
+                            blocks = extract_response_blocks(clean)
+                            # 마지막 블록 제외 (성장 중)
+                            for blk in blocks[:-1]:
+                                if self._already_sent(blk):
+                                    continue
+                                _log("AI→BOT", f"stream block ({len(blk)} chars)")
                                 try:
-                                    await _send_output(app, chat_id, stream_resp)
+                                    await _send_output(app, chat_id, blk)
                                     _log("BOT→USER", "delivered (busy-stream)")
-                                    self.last_sent = stream_resp
-                                    self._mark_sent(stream_resp)
+                                    self.last_sent = blk
+                                    self._mark_sent(blk)
                                 except Exception as e:
                                     _log("BUSY-STREAM-FAIL", str(e))
+                                    break
 
                         if self.status_msg_id and self.busy_started_at:
                             elapsed = int(now_ts - self.busy_started_at)
