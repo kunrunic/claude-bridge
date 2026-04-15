@@ -322,6 +322,7 @@ class Bridge:
         self.skip_permissions: bool = False
         self.current_session_id: str | None = None
         self.last_approval_summary: str = ""
+        self._sent_keys: list[str] = []   # 최근 전송 응답 키 (중복 방지)
 
     def _build_cmd(self, session_id: str | None) -> str:
         parts = [CLAUDE]
@@ -376,15 +377,22 @@ class Bridge:
             return "[권한 스킵 ON]  탭하면 OFF"
         return "[권한 확인 ON]  탭하면 스킵"
 
-    def _similar_to_last_sent(self, text: str) -> bool:
-        """pre-busy / pre-approval flush 중복 방지용 유사도 체크.
-        각 응답의 마지막 3줄(비어있지 않은)이 같으면 같은 turn 응답으로 간주."""
-        if not self.last_sent:
-            return False
-        def _tail(s: str) -> str:
-            lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-            return "\n".join(lines[-3:])
-        return _tail(text) == _tail(self.last_sent)
+    def _response_key(self, text: str) -> str:
+        """중복 판정용 정규화 키 — 빈 줄/공백 무시한 정규화 문자열"""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return "\n".join(lines)
+
+    def _already_sent(self, text: str) -> bool:
+        """최근 전송 내역(최대 20개)과 비교해 중복인지 확인"""
+        key = self._response_key(text)
+        return key in self._sent_keys
+
+    def _mark_sent(self, text: str):
+        key = self._response_key(text)
+        self._sent_keys.append(key)
+        # 최근 20개만 유지
+        if len(self._sent_keys) > 20:
+            self._sent_keys.pop(0)
 
     def stop(self):
         self.running = False
@@ -448,11 +456,12 @@ class Bridge:
                     response = extract_last_response(clean)
                     if (response and "⏺" in response
                             and response != self.last_sent
-                            and not self._similar_to_last_sent(response)):
+                            and not self._already_sent(response)):
                         _log("AI→BOT", f"pre-approval flush ({len(response)} chars)")
                         await _send_output(app, chat_id, response)
                         _log("BOT→USER", "delivered (pre-approval flush)")
                         self.last_sent = response
+                        self._mark_sent(response)
 
                     self.last_approval_summary = summarize_approval(clean)
                     _log("AI-APPROVAL", self.last_approval_summary)
@@ -481,11 +490,12 @@ class Bridge:
                     response = extract_last_response(clean)
                     if (response and "⏺" in response
                             and response != self.last_sent
-                            and not self._similar_to_last_sent(response)):
+                            and not self._already_sent(response)):
                         _log("AI→BOT", f"pre-busy flush ({len(response)} chars)")
                         await _send_output(app, chat_id, response)
                         _log("BOT→USER", "delivered (pre-busy flush)")
                         self.last_sent = response
+                        self._mark_sent(response)
 
                 # busy 진입
                 if busy_now and not self.was_busy:
@@ -547,7 +557,7 @@ class Bridge:
                     # - 첫 캡처이고 ⏺가 없으면 현재 화면(30줄)
                     to_send = None
                     if response and "⏺" in response:
-                        if response != self.last_sent:
+                        if response != self.last_sent and not self._already_sent(response):
                             to_send = response
                     elif is_first:
                         to_send = "\n".join(pending.splitlines()[-30:]).strip()
@@ -557,6 +567,7 @@ class Bridge:
                         await _send_output(app, chat_id, to_send)
                         _log("BOT→USER", "delivered")
                         self.last_sent = to_send
+                        self._mark_sent(to_send)
                     else:
                         self.last_sent = response or pending
                     pending = ""
