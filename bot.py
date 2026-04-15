@@ -332,8 +332,6 @@ def find_sessions(limit: int = 8) -> list[dict]:
         if not title:
             continue
         activity_ts = last_ts if last_ts > 0 else p.stat().st_mtime
-        if now - activity_ts < 60:
-            continue
         if _is_locked(p.stem):
             continue
         proj_slug = p.parent.name.lstrip("-")
