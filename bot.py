@@ -97,42 +97,24 @@ def is_approval(text: str) -> bool:
     return bool(APPROVAL_RE.search(text))
 
 def summarize_approval(text: str) -> str:
-    """승인 요청 박스 영역에서만 도구명 + 짧은 설명 추출"""
+    """승인 요청 박스에서 도구명만 추출 (상세 내용은 이미 ⏺ Bash(...) 로 전달됨)"""
     raw_lines = text.splitlines()
 
-    # "Do you want to proceed?" 위치 찾기 (가장 마지막 것)
     proceed_idx = -1
     for i in range(len(raw_lines) - 1, -1, -1):
-        if "Do you want to" in raw_lines[i] or "Do you want" in raw_lines[i]:
+        if "Do you want to" in raw_lines[i]:
             proceed_idx = i
             break
     if proceed_idx < 0:
         return "승인"
 
-    # proceed 위로 최대 15줄만 검사 (승인 박스 범위)
-    start = max(0, proceed_idx - 15)
-    lines = [ln.strip() for ln in raw_lines[start:proceed_idx] if ln.strip()]
-
-    tool = ""
-    detail = ""
-    for i, ln in enumerate(lines):
-        m = re.match(r"^(Bash|Edit|Write|Read|MultiEdit|WebFetch|Grep|Glob|Task)\b\s*(?:command|file)?$", ln)
+    start = max(0, proceed_idx - 30)
+    for ln in raw_lines[start:proceed_idx]:
+        s = ln.strip()
+        m = re.match(r"^(Bash|Edit|Write|Read|MultiEdit|WebFetch|Grep|Glob|Task)\b", s)
         if m:
-            tool = m.group(1)
-            for nxt in lines[i+1:]:
-                if not nxt or nxt.startswith("❯") or "evaluates" in nxt:
-                    continue
-                detail = nxt
-                break
-            break
-
-    if not tool and lines:
-        detail = lines[0]
-
-    detail = re.sub(r"\s+", " ", detail)[:70]
-    if tool and detail:
-        return f"{tool}({detail})"
-    return tool or detail or "승인"
+            return m.group(1)
+    return "승인"
 
 def is_busy(text: str) -> bool:
     """Claude가 처리 중인지 - 마지막 20줄만 체크"""
