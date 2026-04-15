@@ -27,6 +27,7 @@ from telegram.request import HTTPXRequest
 TMUX_SCROLL_LINES   = 200   # pane 캡처 줄 수
 APPROVAL_SCAN_LINES = 30    # 승인 박스 스캔 범위
 SETTLE_TICKS        = 2     # 화면 안정화 틱 수
+BUSY_STREAM_SEC     = 10    # bypass 모드 등 장시간 busy 중 ⏺ 블록 주기적 포워딩 간격
 MAX_SENT_HISTORY    = 20    # 중복 방지 히스토리 최대 개수
 STOP_WAIT_SEC       = 5     # stop() /exit 후 대기 초
 MAX_MSG_CHARS       = 3500  # Telegram 메시지 최대 길이
@@ -656,6 +657,7 @@ class Bridge:
         self.busy_last_change_at: float | None = None  # P2: pane 마지막 변경 시각
         self.auto_compacting: bool = False       # Context limit 자동 /compact 진행 중
         self.compact_error_halted: bool = False  # /compact 실패 감지 → 재시도 중단
+        self.busy_last_stream_at: float | None = None  # bypass 모드 중 ⏺ 스트리밍 throttle
         settle = 0
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
@@ -839,6 +841,8 @@ class Bridge:
                         # 잔존 스크롤백의 Crunched/Compacting 마커로 오탐하지 않도록
                         # busy 진입 시점의 상태를 snapshot — 이후 "새로 등장한 경우"에만 감지
                         self._pre_busy_had_compact = has_compaction(clean)
+                        # busy 스트리밍 타이머 초기화 — 진입 직후 1회는 즉시 가능
+                        self.busy_last_stream_at = None
                         label, cc_sec = busy_status(clean)
                         self.last_status_label = label
                         _log("AI-BUSY", label)
@@ -889,6 +893,28 @@ class Bridge:
                             pending = ""
                             await asyncio.sleep(1)
                             continue
+
+                        # busy 중 ⏺ 블록 주기적 스트리밍 (bypass 모드 장시간 busy 대응)
+                        # BUSY_STREAM_SEC 마다 새 ⏺ 블록이 있으면 포워딩.
+                        should_stream = (
+                            self.busy_last_stream_at is None
+                            or now_ts - self.busy_last_stream_at >= BUSY_STREAM_SEC
+                        )
+                        if should_stream and not self.awaiting_approval:
+                            self.busy_last_stream_at = now_ts
+                            stream_resp = extract_last_response(clean)
+                            if (stream_resp
+                                    and "⏺" in stream_resp
+                                    and stream_resp != self.last_sent
+                                    and not self._already_sent(stream_resp)):
+                                _log("AI→BOT", f"stream ({len(stream_resp)} chars)")
+                                try:
+                                    await _send_output(app, chat_id, stream_resp)
+                                    _log("BOT→USER", "delivered (busy-stream)")
+                                    self.last_sent = stream_resp
+                                    self._mark_sent(stream_resp)
+                                except Exception as e:
+                                    _log("BUSY-STREAM-FAIL", str(e))
 
                         if self.status_msg_id and self.busy_started_at:
                             elapsed = int(now_ts - self.busy_started_at)
