@@ -34,8 +34,9 @@ cd claude-bridge
 ## 실행
 
 ```bash
-./start.sh   # 백그라운드 시작
-./stop.sh    # 종료
+./start.sh    # 백그라운드 시작
+./stop.sh     # 종료 (세션 락 자동 해제)
+./restart.sh  # 재시작 (stop → start)
 ```
 
 - 로그: `logs/YYYY-MM-DD.log` (일별, 3일 보관 후 자동 삭제)
@@ -59,6 +60,8 @@ cp -r claude-bridge claude-bridge-personal
 
 → tmux 세션명: `claude_bridge_work`, `claude_bridge_personal` 로 자동 분리됨.
 
+두 인스턴스가 같은 Claude 세션을 동시에 resume하려 할 때는 **세션 락**이 자동으로 충돌을 막습니다. (아래 [멀티 인스턴스 안전](#멀티-인스턴스-안전) 참고)
+
 ## 텔레그램 명령어
 
 | 명령 | 동작 |
@@ -66,6 +69,7 @@ cp -r claude-bridge claude-bridge-personal
 | `/start` | 세션 목록(최근 활동순) / 새 세션 / 권한 모드 토글 |
 | `/end` | 현재 세션 종료 |
 | `/esc` | Escape 키 전송 (승인창 취소, 작업 중단) |
+| `/unlock` | 이 인스턴스가 보유한 세션 락 강제 해제 |
 | `/whoami` | 내 chat_id 확인 (초기 설정용) |
 
 ---
@@ -108,6 +112,23 @@ cp -r claude-bridge claude-bridge-personal
 - 봇이 죽거나 재시작해도 **tmux 세션은 독립 유지**
 - 재기동 시 기존 tmux 세션 자동 감지해 모니터링 재개
 - 중복 실행 방지 ("기존 유지 / 새로 시작" 선택 UI)
+- **폴링 재연결 루프**: 네트워크 오류 시 exponential backoff(1→2→4→…→60초)로 자동 재연결, 10회 실패 시 프로세스 종료(systemd/launchd 자동 재시작 트리거)
+
+### 멀티 인스턴스 안전
+
+두 개의 봇 인스턴스(cb1/cb2)가 같은 Claude 세션을 동시에 resume하는 것을 **파일 락**으로 방지합니다.
+
+- 락 파일: `~/.claude/.cb_lock_{session_id}` (소유 인스턴스 + chat_id 기록)
+- `open("x")` exclusive create로 race condition 없는 원자적 획득
+- stale 락 자동 감지: 락 소유자의 tmux 세션이 없으면 자동 해제 후 재획득
+- 봇 종료 시(`stop.sh`) 이 인스턴스가 보유한 **모든 락 자동 해제**
+- 텔레그램에서 `/unlock` 으로 원격 해제 (본인 chat_id 소유 락만)
+- 잠금 충돌 시 인라인 버튼으로 바로 해제 가능
+
+```
+⚠️ 이미 사용 중인 세션입니다. /unlock으로 해제 후 다시 시도하세요.
+[ /unlock 실행 ]
+```
 
 ### 스마트 출력 필터링
 - 작업 중(`esc to interrupt` 감지)일 때는 **상태 메시지 1개를 계속 edit** → 채팅 스팸 없음
@@ -117,10 +138,43 @@ cp -r claude-bridge claude-bridge-personal
 - 연쇄 tool 호출 사이의 중간 설명도 누락 없이 전달 (pre-busy/pre-approval flush)
 
 ### 승인 흐름
-- Claude Code의 `Do you want to proceed?` 감지 → 텔레그램 인라인 버튼
+
+Claude Code의 `Do you want to proceed?` 감지 → 텔레그램 인라인 버튼
+
+```
+승인 요청:
+┌─────────────────────┐
+│ Bash                │
+│ ls -la              │
+│ Do you want to...   │
+└─────────────────────┘
+[ Yes (승인) ]  [ No (거부) ]
+```
+
 - 폴더 신뢰 프롬프트는 본인 PC이므로 **자동 승인**
-- 승인 후엔 짧은 요약으로 교체 (`✅ 승인 · Bash(pytest test_foo.py)`)
+- 승인 후엔 짧은 요약으로 교체 (`✅ 승인 · Bash`)
 - `--dangerously-skip-permissions` 모드 토글 + 세션 재시작 지원
+
+#### 늦은 승인 응답 처리 (승인 프롬프트 만료 후)
+
+몇 시간 뒤에 Yes/No를 탭해도 상황에 맞게 처리합니다:
+
+| 상황 | Yes 탭 | No 탭 |
+|------|--------|-------|
+| 프롬프트 아직 있음 | Enter 전송 (정상) | Down+Enter 전송 (정상) |
+| 프롬프트 만료, 세션 살아있음 | Claude에 "승인했습니다. 이어서 진행해주세요." 전송 | Claude에 "거부했습니다. 취소해주세요." 전송 |
+| 세션 죽음 | 세션 자동 재시작 후 승인 메시지 전송 | "세션을 다시 시작하시겠습니까?" 메뉴 표시 |
+
+### 사용량 한도 감지
+
+Claude API 한도 초과 시 즉시 알림 + 리셋 시각 파싱:
+
+```
+⚠️ Claude 사용량 한도에 도달했습니다.
+5:00 PM (Pacific Time)에 리셋됩니다. 그때 다시 보내주세요.
+```
+
+한도 해제 감지 시 자동으로 정상 모드 복귀.
 
 ### 이미지 첨부
 - 텔레그램에서 이미지+캡션 전송 → 로컬 저장 후 Claude에 경로 전달
@@ -133,13 +187,15 @@ cp -r claude-bridge claude-bridge-personal
 
 ### 구조화된 포그라운드 로그
 ```
-[10:35:45] [USER→BOT] 이 테스트 결과 어떻게 나왔어?
-[10:35:45] [BOT→AI]   forwarded to Claude (waiting for response)
-[10:35:48] [AI-BUSY]  Thinking… (2s)
-[10:36:02] [AI→BOT]   response (847 chars)
-[10:36:02] [BOT→USER] delivered
-[10:36:15] [AI-APPROVAL] Bash(pytest test_converter.py)
-[10:36:20] [USER-ACK]  approved
+[10:35:45] [USER→BOT]    이 테스트 결과 어떻게 나왔어?
+[10:35:45] [BOT→AI]      forwarded to Claude (waiting for response)
+[10:35:48] [AI-BUSY]     Thinking… (2s)
+[10:36:02] [AI→BOT]      response (847 chars)
+[10:36:02] [BOT→USER]    delivered
+[10:36:15] [AI-APPROVAL] Bash
+[10:36:20] [USER-ACK]    approved
+[10:38:01] [AI-LIMIT]    5:00 PM (Pacific Time)
+[10:38:01] [UNLOCK]      sessABC12345 by chat_id=12345678
 ```
 
 ---
@@ -148,11 +204,27 @@ cp -r claude-bridge claude-bridge-personal
 
 ```
 [Telegram]  ←→  [bot.py 데몬]  ←→  [tmux 'claude_bridge']
-  폰/태블릿        Python          │
-                                   └─ claude --resume {id}
-                                        (cwd = 세션 원래 경로)
+  폰/태블릿        asyncio         │
+                   │               └─ claude --resume {id}
+                   │                    (cwd = 세션 원래 경로)
+                   │
+                   ├─ monitor task (비동기, tmux_run_async)
+                   ├─ polling reconnect loop (exponential backoff)
+                   └─ ~/.claude/.cb_lock_* (세션 락)
 ```
 
+- **비동기 tmux 호출** — `run_in_executor`로 subprocess를 스레드풀에서 실행, 이벤트 루프 블로킹 없음
+- **subprocess timeout 5s** — tmux 명령 무한 대기 방지
+- **Telegram Request timeout** — `connect_timeout=10s`, `read_timeout=15s`
 - **tmux 폭 80 cols** — 모바일 텔레그램에서도 레이아웃 유지
 - **HTML `<pre>`** 포맷 — `_변수명_` 같은 Markdown 특수문자 충돌 없음
 - **라인 단위 청크 분할** — 긴 응답도 온전히 전달
+- **모니터 오류 카운터** — 5회 연속 경고, 10회 연속 모니터 종료 + Telegram 알림
+
+## 테스트
+
+```bash
+python -m pytest tests/ -q
+```
+
+87개 테스트: 단위 / 동시성 / 시나리오 / tmux 죽음 / 승인 재연결 커버.

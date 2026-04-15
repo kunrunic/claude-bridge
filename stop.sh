@@ -23,7 +23,7 @@ PID=$(cat "$PID_FILE")
 
 if kill -0 $PID 2>/dev/null; then
     kill $PID
-    sleep 1
+    sleep 5
     if kill -0 $PID 2>/dev/null; then
         echo "정상 종료 안됨, 강제 종료 중..."
         kill -9 $PID 2>/dev/null || true
@@ -34,3 +34,18 @@ else
 fi
 
 rm -f "$PID_FILE"
+
+# 이 인스턴스 소유 락파일 정리
+TMUX_NAME=$(python3 -c "import json; print(json.load(open('config.json')).get('tmux_session','claude_bridge'))" 2>/dev/null || echo "")
+if [ -n "$TMUX_NAME" ]; then
+    COUNT=0
+    for lf in ~/.claude/.cb_lock_*; do
+        [ -f "$lf" ] || continue
+        OWNER=$(head -1 "$lf" 2>/dev/null || true)
+        if [ "$OWNER" = "$TMUX_NAME" ]; then
+            rm -f "$lf"
+            COUNT=$((COUNT + 1))
+        fi
+    done
+    [ "$COUNT" -gt 0 ] && echo "✓ 락파일 ${COUNT}개 해제"
+fi

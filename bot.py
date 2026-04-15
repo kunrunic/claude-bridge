@@ -10,6 +10,8 @@ import subprocess
 import json
 import re
 import hashlib
+import sys
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -18,14 +20,34 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
 )
+from telegram.request import HTTPXRequest
 
-# -- 설정 ----------------------------------------------------------------------
+# -- 상수 -----------------------------------------------------------------------
+
+TMUX_SCROLL_LINES   = 200   # pane 캡처 줄 수
+APPROVAL_SCAN_LINES = 30    # 승인 박스 스캔 범위
+SETTLE_TICKS        = 2     # 화면 안정화 틱 수
+MAX_SENT_HISTORY    = 20    # 중복 방지 히스토리 최대 개수
+STOP_WAIT_SEC       = 5     # stop() /exit 후 대기 초
+MAX_MSG_CHARS       = 3500  # Telegram 메시지 최대 길이
+BUSY_CHECK_TAIL     = 20    # busy 감지 꼬리 줄 수
+
+# -- 설정 -----------------------------------------------------------------------
 
 _CONFIG_PATH = Path(__file__).parent / "config.json"
 
 def _load_config() -> dict:
-    with open(_CONFIG_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    if not _CONFIG_PATH.exists():
+        sys.exit(f"[FATAL] config.json 없음: {_CONFIG_PATH}")
+    try:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError as e:
+        sys.exit(f"[FATAL] config.json 파싱 오류: {e}")
+    for key in ("token", "claude_path", "allowed_ids"):
+        if key not in cfg:
+            sys.exit(f"[FATAL] config.json 필수 항목 누락: {key}")
+    return cfg
 
 _cfg = _load_config()
 
@@ -37,7 +59,6 @@ ALLOWED_IDS: set[int] = set(_cfg.get("allowed_ids", []))
 
 def _log(tag: str, msg: str = ""):
     """구조화된 포그라운드 로그"""
-    import time
     ts = time.strftime("%H:%M:%S")
     if msg:
         print(f"[{ts}] [{tag}] {msg}")
@@ -71,22 +92,45 @@ TRUST_RE    = re.compile(
 # Claude가 "작업 중" 상태 - "esc to interrupt"만 신뢰 가능한 활성 신호
 # (Running/Compacting 등은 과거 로그에도 남아서 오탐 발생)
 BUSY_RE     = re.compile(r"esc to interrupt")
+# 사용량 한도 초과 감지
+LIMIT_RE    = re.compile(r"You've hit your limit|hit your (daily )?limit", re.IGNORECASE)
 ANSI_RE     = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 # -- tmux 유틸 -----------------------------------------------------------------
 
 def tmux_run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["/opt/homebrew/bin/tmux"] + cmd,
-                          capture_output=True, text=True)
+    try:
+        return subprocess.run(
+            ["/opt/homebrew/bin/tmux"] + cmd,
+            capture_output=True, text=True, timeout=5.0,
+        )
+    except subprocess.TimeoutExpired:
+        _log("TMUX-TIMEOUT", f"cmd={cmd[:3]}")
+        r = subprocess.CompletedProcess(cmd, returncode=1)
+        r.stdout = ""
+        r.stderr = "timeout"
+        return r
+
+async def tmux_run_async(cmd: list[str]) -> subprocess.CompletedProcess:
+    """asyncio 이벤트 루프를 블로킹하지 않는 tmux_run"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, tmux_run, cmd)
 
 def pane_output() -> str:
-    """현재 tmux 패널 내용 반환 (마지막 200줄)"""
-    return tmux_run(["capture-pane", "-t", TMUX, "-p", "-S", "-200"]).stdout
+    """현재 tmux 패널 내용 반환 (마지막 TMUX_SCROLL_LINES줄)"""
+    return tmux_run(
+        ["capture-pane", "-t", TMUX, "-p", "-S", f"-{TMUX_SCROLL_LINES}"]
+    ).stdout
+
+async def pane_output_async() -> str:
+    """pane_output의 비동기 버전"""
+    r = await tmux_run_async(
+        ["capture-pane", "-t", TMUX, "-p", "-S", f"-{TMUX_SCROLL_LINES}"]
+    )
+    return r.stdout
 
 def send_input(text: str):
     """Claude에 텍스트 입력 후 Enter (literal 모드로 안전하게)"""
-    import time
-    # 텍스트는 literal로 전송 (Enter 같은 키명 파싱 회피)
     tmux_run(["send-keys", "-t", TMUX, "-l", text])
     time.sleep(0.1)
     tmux_run(["send-keys", "-t", TMUX, "Enter"])
@@ -116,7 +160,7 @@ def summarize_approval(text: str) -> str:
     if proceed_idx < 0:
         return "승인"
 
-    start = max(0, proceed_idx - 30)
+    start = max(0, proceed_idx - APPROVAL_SCAN_LINES)
     for ln in raw_lines[start:proceed_idx]:
         s = ln.strip()
         m = re.match(r"^(Bash|Edit|Write|Read|MultiEdit|WebFetch|Grep|Glob|Task)\b", s)
@@ -125,8 +169,8 @@ def summarize_approval(text: str) -> str:
     return "승인"
 
 def is_busy(text: str) -> bool:
-    """Claude가 처리 중인지 - 마지막 20줄만 체크"""
-    tail = "\n".join(text.splitlines()[-20:])
+    """Claude가 처리 중인지 - 마지막 BUSY_CHECK_TAIL줄만 체크"""
+    tail = "\n".join(text.splitlines()[-BUSY_CHECK_TAIL:])
     return bool(BUSY_RE.search(tail))
 
 _STATUS_LINE_RE = re.compile(
@@ -139,12 +183,10 @@ _STATUS_LINE_RE = re.compile(
 def busy_status(text: str) -> str:
     """화면에서 실제 진행 상태 라인을 추출"""
     tail_lines = text.splitlines()[-25:]
-    # 뒤에서부터 status 라인 검색
     for line in reversed(tail_lines):
         m = _STATUS_LINE_RE.search(line)
         if m:
             label = m.group(1).strip()
-            # "esc to interrupt" 꼬리 제거
             for cut in ("esc to interrupt", "ctrl+"):
                 idx = label.lower().find(cut)
                 if idx > 0:
@@ -162,8 +204,7 @@ def extract_last_response(text: str) -> str:
 
     end = len(lines)
 
-    # 1) 승인 박스/입력창 경계 감지 — "Do you want to proceed?" 또는 " Bash command" 같은 tool 헤더 직전의 divider 찾기
-    #    범위: 전체 (승인 박스는 길 수 있음)
+    # 1) 승인 박스/입력창 경계 감지
     prompt_idx = -1
     for i in range(len(lines) - 1, -1, -1):
         line = lines[i].strip()
@@ -171,7 +212,6 @@ def extract_last_response(text: str) -> str:
             prompt_idx = i
             break
     if prompt_idx > 0:
-        # proceed 위로 올라가며 첫 divider 찾기 → 승인 박스 시작점
         for i in range(prompt_idx - 1, max(-1, prompt_idx - 60), -1):
             if is_divider(lines[i]):
                 end = min(end, i)
@@ -195,7 +235,7 @@ def extract_last_response(text: str) -> str:
             break
 
     if start < 0:
-        return ""   # Claude 응답 없음
+        return ""
 
     # ⏺ 이후에 새 ❯ 사용자 입력이 있으면 그 전까지만
     for i in range(start + 1, end):
@@ -205,10 +245,84 @@ def extract_last_response(text: str) -> str:
 
     return "\n".join(lines[start:end]).strip()
 
+# -- 세션 락 (멀티 인스턴스 동시 resume 방지) ----------------------------------
+
+_LOCK_DIR = Path.home() / ".claude"
+
+def _lock_path(session_id: str) -> Path:
+    return _LOCK_DIR / f".cb_lock_{session_id}"
+
+def _parse_lock(session_id: str) -> tuple[str, int] | None:
+    """락파일에서 (tmux_name, chat_id) 반환. 없거나 파싱 실패 시 None"""
+    lp = _lock_path(session_id)
+    try:
+        lines = lp.read_text().splitlines()
+        return lines[0].strip(), int(lines[1].strip())
+    except Exception:
+        return None
+
+def _acquire_lock(session_id: str, chat_id: int) -> bool:
+    """락 획득. 이미 다른 인스턴스가 점유 중이면 False"""
+    lp = _lock_path(session_id)
+    try:
+        fd = lp.open("x")
+        fd.write(f"{TMUX}\n{chat_id}")
+        fd.close()
+        return True
+    except FileExistsError:
+        info = _parse_lock(session_id)
+        if info:
+            owner_tmux, _ = info
+            if tmux_run(["has-session", "-t", owner_tmux]).returncode != 0:
+                lp.unlink(missing_ok=True)
+                return _acquire_lock(session_id, chat_id)
+        return False
+    except Exception as e:
+        _log("LOCK-ERROR", str(e))
+        return True  # 락 디렉토리 문제 시 허용 (방어적)
+
+def _release_lock(session_id: str | None):
+    """내 TMUX 세션이 소유한 락만 삭제"""
+    if not session_id:
+        return
+    lp = _lock_path(session_id)
+    try:
+        info = _parse_lock(session_id)
+        if info and info[0] == TMUX:
+            lp.unlink(missing_ok=True)
+    except Exception as e:
+        _log("LOCK-RELEASE-ERROR", str(e))
+
+def _is_locked(session_id: str) -> bool:
+    lp = _lock_path(session_id)
+    if not lp.exists():
+        return False
+    info = _parse_lock(session_id)
+    if not info:
+        lp.unlink(missing_ok=True)
+        return False
+    owner_tmux, _ = info
+    if tmux_run(["has-session", "-t", owner_tmux]).returncode != 0:
+        lp.unlink(missing_ok=True)
+        return False
+    return True
+
+def _my_locks() -> list[tuple[str, int]]:
+    """이 인스턴스(TMUX)가 소유한 락 목록 → [(session_id, chat_id), ...]"""
+    result = []
+    try:
+        for lp in _LOCK_DIR.glob(".cb_lock_*"):
+            session_id = lp.name[len(".cb_lock_"):]
+            info = _parse_lock(session_id)
+            if info and info[0] == TMUX:
+                result.append((session_id, info[1]))
+    except Exception as e:
+        _log("MY-LOCKS-ERROR", str(e))
+    return result
+
 # -- 세션 탐색 -----------------------------------------------------------------
 
 def find_sessions(limit: int = 8) -> list[dict]:
-    import time
     now = time.time()
     candidates = []
     for p in PROJECTS.rglob("*.jsonl"):
@@ -217,10 +331,10 @@ def find_sessions(limit: int = 8) -> list[dict]:
         title, last, last_ts = _parse_session_msgs(p)
         if not title:
             continue
-        # last_ts가 없으면 파일 mtime으로 fallback
         activity_ts = last_ts if last_ts > 0 else p.stat().st_mtime
-        # 최근 60초 내 활동은 현재 활성 세션 가능성 → 제외
         if now - activity_ts < 60:
+            continue
+        if _is_locked(p.stem):
             continue
         proj_slug = p.parent.name.lstrip("-")
         proj_short = proj_slug.split("-")[-1] if proj_slug else ""
@@ -255,7 +369,6 @@ def _parse_session_msgs(path: Path) -> tuple[str, str, float]:
             for line in f:
                 try:
                     d = json.loads(line)
-                    # timestamp는 user/assistant 모든 entry에서 추출
                     ts_str = d.get("timestamp", "")
                     if ts_str:
                         try:
@@ -312,7 +425,11 @@ class Bridge:
         self.skip_permissions: bool = False
         self.current_session_id: str | None = None
         self.last_approval_summary: str = ""
-        self._sent_keys: list[str] = []   # 최근 전송 응답 키 (중복 방지)
+        self.last_approval_context: str = ""   # P2-1: 도구명 + 요약
+        self.last_approval_full: str = ""      # P2-1: pane 전체 내용 (재연결 시 전달용)
+        self._sent_keys: list[str] = []        # 최근 전송 응답 키 (중복 방지)
+        self.limit_reported: bool = False      # 한도 초과 알림 중복 방지
+        self._state_lock = asyncio.Lock()      # P1-4: 상태 직렬화
 
     def _build_cmd(self, session_id: str | None) -> str:
         parts = [CLAUDE]
@@ -332,7 +449,6 @@ class Bridge:
             cwd = default_cwd
         wrapped = f"cd {cwd!r} && {claude_cmd}"
 
-        # 폭 80 cols (표준 터미널, 모바일 친화적)
         r = tmux_run([
             "new-session", "-d", "-s", TMUX,
             "-x", "80", "-y", "50",
@@ -350,7 +466,16 @@ class Bridge:
             return False
         return r.stdout.strip() == "0"
 
-    def start(self, session_id: str | None = None) -> bool:
+    async def is_alive_async(self) -> bool:
+        r = await tmux_run_async(["list-panes", "-t", TMUX, "-F", "#{pane_dead}"])
+        if r.returncode != 0:
+            return False
+        return r.stdout.strip() == "0"
+
+    def start(self, session_id: str | None = None, chat_id: int = 0) -> bool:
+        if session_id and not _acquire_lock(session_id, chat_id):
+            return False
+        _release_lock(self.current_session_id)
         self.current_session_id = session_id
         tmux_run(["kill-session", "-t", TMUX])
         return self._spawn(session_id)
@@ -373,15 +498,14 @@ class Bridge:
         return "\n".join(lines)
 
     def _already_sent(self, text: str) -> bool:
-        """최근 전송 내역(최대 20개)과 비교해 중복인지 확인"""
+        """최근 전송 내역(최대 MAX_SENT_HISTORY개)과 비교해 중복인지 확인"""
         key = self._response_key(text)
         return key in self._sent_keys
 
     def _mark_sent(self, text: str):
         key = self._response_key(text)
         self._sent_keys.append(key)
-        # 최근 20개만 유지
-        if len(self._sent_keys) > 20:
+        if len(self._sent_keys) > MAX_SENT_HISTORY:
             self._sent_keys.pop(0)
 
     async def stop(self):
@@ -389,8 +513,11 @@ class Bridge:
         if self.task:
             self.task.cancel()
         send_input("/exit")
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(STOP_WAIT_SEC)
         tmux_run(["kill-session", "-t", TMUX])
+        for sid, _ in _my_locks():
+            _release_lock(sid)
+        self.current_session_id = None
 
     async def monitor(self, app: Application, chat_id: int):
         self.chat_id = chat_id
@@ -398,195 +525,239 @@ class Bridge:
         self.last_hash = self.last_sent = ""
         self.dead_reported = False
         self.was_busy = False
-        self.status_msg_id: int | None = None    # 진행 상태 메시지 ID
+        self.status_msg_id: int | None = None
         self.busy_started_at: float | None = None
         self.last_status_label = ""
         settle = 0
         pending = ""
+        error_count = 0   # P1-6: 연속 오류 카운터
 
-        # 부팅 시점에 pane에 이미 있던 ⏺ 응답은 "이미 사용자가 본 것"으로 간주해
-        # 재전송하지 않도록 시드한다 (다중 인스턴스/재기동 대비).
+        # 부팅 시점에 pane에 이미 있던 ⏺ 응답은 "이미 사용자가 본 것"으로 간주
         try:
-            seed_clean = strip_ansi(pane_output()).strip()
+            seed_clean = strip_ansi(await pane_output_async()).strip()
             seed_resp  = extract_last_response(seed_clean)
             if seed_resp:
                 self.last_sent = seed_resp
                 self._mark_sent(seed_resp)
                 _log("BOOT-SEED", f"마지막 ⏺ 블록 {len(seed_resp)}자 무시 처리")
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            print(f"[boot seed error] {e}")
+            _log("BOOT-SEED-ERROR", str(e))
 
-        while self.running:
-            try:
-                check = tmux_run(["has-session", "-t", TMUX])
-                if check.returncode != 0:
-                    if not self.dead_reported:
-                        await app.bot.send_message(chat_id, "tmux 세션이 사라졌습니다. /start로 다시 시작하세요.")
-                        self.dead_reported = True
-                        self.running = False
-                    break
+        try:
+            while self.running:
+                try:
+                    check = await tmux_run_async(["has-session", "-t", TMUX])
+                    if check.returncode != 0:
+                        if not self.dead_reported:
+                            await app.bot.send_message(chat_id, "tmux 세션이 사라졌습니다. /start로 다시 시작하세요.")
+                            self.dead_reported = True
+                            self.running = False
+                        break
 
-                if not self.is_alive():
-                    if not self.dead_reported:
-                        out = pane_output()
-                        clean = strip_ansi(out).strip()
-                        await app.bot.send_message(
-                            chat_id,
-                            f"Claude 프로세스가 종료되었습니다.\n마지막 출력:\n```\n{clean[-1500:]}\n```",
-                            parse_mode="Markdown"
-                        )
-                        self.dead_reported = True
-                        self.running = False
-                    break
+                    if not await self.is_alive_async():
+                        if not self.dead_reported:
+                            out = await pane_output_async()
+                            clean = strip_ansi(out).strip()
+                            await app.bot.send_message(
+                                chat_id,
+                                f"Claude 프로세스가 종료되었습니다.\n마지막 출력:\n```\n{clean[-1500:]}\n```",
+                                parse_mode="Markdown"
+                            )
+                            self.dead_reported = True
+                            self.running = False
+                        break
 
-                import time
-                out = pane_output()
-                clean = strip_ansi(out).strip()
+                    out = await pane_output_async()
+                    clean = strip_ansi(out).strip()
 
-                # 승인/신뢰 프롬프트는 busy보다 우선 체크
-                if is_trust_prompt(clean):
-                    if not self.last_sent.endswith("__trust_ack__"):
-                        send_key("Enter")
-                        _log("AUTO-ACK", "trust prompt")
-                        await app.bot.send_message(chat_id, "폴더 신뢰 프롬프트 자동 승인")
-                        self.last_sent = clean + "__trust_ack__"
-                    await asyncio.sleep(1)
-                    continue
+                    # 승인/신뢰 프롬프트는 busy보다 우선 체크
+                    if is_trust_prompt(clean):
+                        if not self.last_sent.endswith("__trust_ack__"):
+                            send_key("Enter")
+                            _log("AUTO-ACK", "trust prompt")
+                            await app.bot.send_message(chat_id, "폴더 신뢰 프롬프트 자동 승인")
+                            self.last_sent = clean + "__trust_ack__"
+                        await asyncio.sleep(1)
+                        continue
 
-                if is_approval(clean) and not self.awaiting_approval:
-                    # Fix 2: 승인창 위 새 ⏺ 응답이 있으면 먼저 전송
-                    # pre-busy flush 에서 이미 보냈으면 중복 방지
-                    response = extract_last_response(clean)
-                    if (response and "⏺" in response
-                            and response != self.last_sent
-                            and not self._already_sent(response)):
-                        _log("AI→BOT", f"pre-approval flush ({len(response)} chars)")
-                        await _send_output(app, chat_id, response)
-                        _log("BOT→USER", "delivered (pre-approval flush)")
-                        self.last_sent = response
-                        self._mark_sent(response)
+                    # 사용량 한도 초과 감지
+                    if LIMIT_RE.search(clean):
+                        if not self.limit_reported:
+                            reset_match = re.search(
+                                r"resets\s+(\d+(?::\d+)?(?:am|pm)?)\s*\(([^)]+)\)",
+                                clean, re.IGNORECASE
+                            )
+                            reset_info = (
+                                f"{reset_match.group(1)} ({reset_match.group(2)})"
+                                if reset_match else None
+                            )
+                            msg = "⚠️ Claude 사용량 한도에 도달했습니다."
+                            if reset_info:
+                                msg += f"\n{reset_info}에 리셋됩니다. 그때 다시 보내주세요."
+                            _log("AI-LIMIT", reset_info or "한도 초과")
+                            await app.bot.send_message(chat_id, msg)
+                            self.limit_reported = True
+                        await asyncio.sleep(30)
+                        continue
 
-                    self.last_approval_summary = summarize_approval(clean)
-                    _log("AI-APPROVAL", self.last_approval_summary)
-                    # busy 상태 메시지 삭제
-                    if self.status_msg_id:
+                    if self.limit_reported and not LIMIT_RE.search(clean):
+                        self.limit_reported = False
+
+                    if is_approval(clean) and not self.awaiting_approval:
+                        # Fix 2: 승인창 위 새 ⏺ 응답이 있으면 먼저 전송
+                        response = extract_last_response(clean)
+                        if (response and "⏺" in response
+                                and response != self.last_sent
+                                and not self._already_sent(response)):
+                            _log("AI→BOT", f"pre-approval flush ({len(response)} chars)")
+                            await _send_output(app, chat_id, response)
+                            _log("BOT→USER", "delivered (pre-approval flush)")
+                            self.last_sent = response
+                            self._mark_sent(response)
+
+                        # P2-1: 승인 컨텍스트 저장
+                        self.last_approval_summary = summarize_approval(clean)
+                        self.last_approval_context = self.last_approval_summary
+                        self.last_approval_full = clean[-800:]
+                        _log("AI-APPROVAL", self.last_approval_summary)
+
+                        if self.status_msg_id:
+                            try:
+                                await app.bot.delete_message(chat_id, self.status_msg_id)
+                            except Exception:
+                                pass
+                            self.status_msg_id = None
+                        self.awaiting_approval = True
+                        await _send_approval(app, chat_id, clean)
+                        await asyncio.sleep(1)
+                        continue
+
+                    if self.awaiting_approval:
+                        await asyncio.sleep(1)
+                        continue
+
+                    busy_now = is_busy(clean)
+
+                    # Fix 1: busy 진입 엣지에서 직전 ⏺ 응답 flush
+                    if busy_now and not self.was_busy:
+                        response = extract_last_response(clean)
+                        if (response and "⏺" in response
+                                and response != self.last_sent
+                                and not self._already_sent(response)):
+                            _log("AI→BOT", f"pre-busy flush ({len(response)} chars)")
+                            await _send_output(app, chat_id, response)
+                            _log("BOT→USER", "delivered (pre-busy flush)")
+                            self.last_sent = response
+                            self._mark_sent(response)
+
+                    # busy 진입
+                    if busy_now and not self.was_busy:
+                        self.was_busy = True
+                        self.busy_started_at = time.time()
+                        label = busy_status(clean)
+                        self.last_status_label = label
+                        _log("AI-BUSY", label)
+                        try:
+                            msg = await app.bot.send_message(chat_id, f"⏳ {label}… (0s)")
+                            self.status_msg_id = msg.message_id
+                        except Exception as e:
+                            _log("STATUS-MSG-ERR", str(e))
+                            self.status_msg_id = None
+
+                    # busy 지속: 상태 메시지 편집
+                    if busy_now:
+                        if self.status_msg_id and self.busy_started_at:
+                            elapsed = int(time.time() - self.busy_started_at)
+                            label = busy_status(clean)
+                            new_text = f"⏳ {label}… ({elapsed}s)"
+                            if new_text != getattr(self, "_last_status_text", ""):
+                                try:
+                                    await app.bot.edit_message_text(
+                                        chat_id=chat_id,
+                                        message_id=self.status_msg_id,
+                                        text=new_text,
+                                    )
+                                    self._last_status_text = new_text
+                                except Exception:
+                                    pass
+                        pending = ""
+                        await asyncio.sleep(2)
+                        continue
+
+                    # busy 종료 직후: 상태 메시지 삭제
+                    if self.was_busy and self.status_msg_id:
                         try:
                             await app.bot.delete_message(chat_id, self.status_msg_id)
                         except Exception:
                             pass
                         self.status_msg_id = None
-                    self.awaiting_approval = True
-                    await _send_approval(app, chat_id, clean)
-                    await asyncio.sleep(1)
-                    continue
+                        self._last_status_text = ""
 
-                # 승인 대기 중이면 busy 상태 처리 스킵
-                if self.awaiting_approval:
-                    await asyncio.sleep(1)
-                    continue
-
-                busy_now = is_busy(clean)
-
-                # Fix 1: busy 진입 엣지에서 직전 ⏺ 응답 flush
-                # (연쇄 tool 호출 사이에 낀 중간 설명이 drop 되는 것 방지)
-                if busy_now and not self.was_busy:
-                    response = extract_last_response(clean)
-                    if (response and "⏺" in response
-                            and response != self.last_sent
-                            and not self._already_sent(response)):
-                        _log("AI→BOT", f"pre-busy flush ({len(response)} chars)")
-                        await _send_output(app, chat_id, response)
-                        _log("BOT→USER", "delivered (pre-busy flush)")
-                        self.last_sent = response
-                        self._mark_sent(response)
-
-                # busy 진입
-                if busy_now and not self.was_busy:
-                    self.was_busy = True
-                    self.busy_started_at = time.time()
-                    label = busy_status(clean)
-                    self.last_status_label = label
-                    _log("AI-BUSY", label)
-                    try:
-                        msg = await app.bot.send_message(chat_id, f"⏳ {label}… (0s)")
-                        self.status_msg_id = msg.message_id
-                    except Exception:
-                        self.status_msg_id = None
-
-                # busy 지속: 상태 메시지 편집
-                if busy_now:
-                    if self.status_msg_id and self.busy_started_at:
-                        elapsed = int(time.time() - self.busy_started_at)
-                        label = busy_status(clean)
-                        new_text = f"⏳ {label}… ({elapsed}s)"
-                        if new_text != getattr(self, "_last_status_text", ""):
-                            try:
-                                await app.bot.edit_message_text(
-                                    chat_id=chat_id,
-                                    message_id=self.status_msg_id,
-                                    text=new_text,
-                                )
-                                self._last_status_text = new_text
-                            except Exception:
-                                pass
-                    pending = ""
-                    await asyncio.sleep(2)
-                    continue
-
-                # busy 종료 직후: 상태 메시지 삭제
-                if self.was_busy and self.status_msg_id:
-                    try:
-                        await app.bot.delete_message(chat_id, self.status_msg_id)
-                    except Exception:
-                        pass
-                    self.status_msg_id = None
-                    self._last_status_text = ""
-
-                # 대기 상태 → 2초 안정 후 전송
-                h = hashlib.md5(clean.encode()).hexdigest()
-                if h != self.last_hash:
-                    self.last_hash = h
-                    pending = clean
-                    settle = 0
-                else:
-                    settle += 1
-
-                if pending and settle >= 2 and pending != self.last_sent:
-                    response = extract_last_response(pending)
-                    is_first = not self.last_sent
-
-                    # 전송 대상 결정:
-                    # - ⏺ 응답이 있으면 그것만 (추출본)
-                    # - 첫 캡처이고 ⏺가 없으면 현재 화면(30줄)
-                    to_send = None
-                    if response and "⏺" in response:
-                        if response != self.last_sent and not self._already_sent(response):
-                            to_send = response
-                    elif is_first:
-                        to_send = "\n".join(pending.splitlines()[-30:]).strip()
-
-                    if to_send and not self.awaiting_approval:
-                        _log("AI→BOT", f"response ({len(to_send)} chars)")
-                        await _send_output(app, chat_id, to_send)
-                        _log("BOT→USER", "delivered")
-                        self.last_sent = to_send
-                        self._mark_sent(to_send)
+                    # 대기 상태 → SETTLE_TICKS 안정 후 전송
+                    h = hashlib.md5(clean.encode()).hexdigest()
+                    if h != self.last_hash:
+                        self.last_hash = h
+                        pending = clean
+                        settle = 0
                     else:
-                        self.last_sent = response or pending
-                    pending = ""
-                    self.was_busy = False
+                        settle += 1
 
-            except Exception as e:
-                print(f"[monitor error] {e}")
+                    if pending and settle >= SETTLE_TICKS and pending != self.last_sent:
+                        response = extract_last_response(pending)
+                        is_first = not self.last_sent
 
-            await asyncio.sleep(1)
+                        to_send = None
+                        if response and "⏺" in response:
+                            if response != self.last_sent and not self._already_sent(response):
+                                to_send = response
+                        elif is_first:
+                            to_send = "\n".join(pending.splitlines()[-30:]).strip()
+
+                        if to_send and not self.awaiting_approval:
+                            _log("AI→BOT", f"response ({len(to_send)} chars)")
+                            await _send_output(app, chat_id, to_send)
+                            _log("BOT→USER", "delivered")
+                            self.last_sent = to_send
+                            self._mark_sent(to_send)
+                        else:
+                            self.last_sent = response or pending
+                        pending = ""
+                        self.was_busy = False
+
+                    error_count = 0  # P1-6: 정상 동작 시 리셋
+
+                except asyncio.CancelledError:
+                    raise  # P1-5: CancelledError 반드시 전파
+                except Exception as e:
+                    error_count += 1
+                    _log("MONITOR-ERROR", f"[{error_count}] {e}")
+                    if error_count == 5:
+                        try:
+                            await app.bot.send_message(chat_id, f"⚠️ 모니터 오류 {error_count}회 연속 발생")
+                        except Exception:
+                            pass
+                    elif error_count >= 10:
+                        try:
+                            await app.bot.send_message(chat_id, f"❌ 모니터 오류 {error_count}회 연속 — 모니터 종료")
+                        except Exception:
+                            pass
+                        self.running = False
+                        break
+
+                await asyncio.sleep(1)
+
+        except asyncio.CancelledError:  # P1-5: 외부 cancel 처리
+            _log("MONITOR", "cancelled — cleanup")
+            raise
 
 
 bridge = Bridge()
 
 # -- 헬퍼 ----------------------------------------------------------------------
 
-def _chunk_text(text: str, size: int = 3500) -> list[str]:
+def _chunk_text(text: str, size: int = MAX_MSG_CHARS) -> list[str]:
     """긴 텍스트를 줄 단위로 size 이하로 나눔"""
     chunks = []
     buf = []
@@ -599,7 +770,6 @@ def _chunk_text(text: str, size: int = 3500) -> list[str]:
         else:
             buf.append(line)
             cur += len(line)
-        # 한 줄이 size보다 크면 강제 분할
         while cur > size:
             s = "".join(buf)
             chunks.append(s[:size])
@@ -612,20 +782,19 @@ def _chunk_text(text: str, size: int = 3500) -> list[str]:
 
 async def _send_output(app: Application, chat_id: int, text: str):
     import html as _html
-    chunks = _chunk_text(text, size=3500)
+    chunks = _chunk_text(text)
     total = len(chunks)
     for i, chunk in enumerate(chunks, 1):
         header = f"[{i}/{total}]\n" if total > 1 else ""
-        # HTML <pre>는 Markdown의 `_`, `*` 충돌 없음, < > & 만 이스케이프
         body = f"{header}<pre>{_html.escape(chunk)}</pre>"
         try:
             await app.bot.send_message(chat_id, body, parse_mode="HTML")
         except Exception as e:
-            print(f"[send HTML failed: {e}]")
+            _log("SEND-HTML-FAIL", str(e))
             try:
                 await app.bot.send_message(chat_id, header + chunk)
             except Exception as e2:
-                print(f"[send plain failed: {e2}]")
+                _log("SEND-PLAIN-FAIL", str(e2))
         await asyncio.sleep(0.2)
 
 def _approval_box(text: str) -> str:
@@ -638,13 +807,13 @@ def _approval_box(text: str) -> str:
             break
     if proceed < 0:
         return text[-400:]
-    start = max(0, proceed - 30)
+    start = max(0, proceed - APPROVAL_SCAN_LINES)
     for i in range(proceed - 1, start - 1, -1):
         s = lines[i].strip()
         if s and len(s) > 20 and all(c in "─" for c in s):
             start = i + 1
             break
-    end = min(len(lines), proceed + 6)  # Yes/No/Esc 안내 몇 줄 포함
+    end = min(len(lines), proceed + 6)
     return "\n".join(lines[start:end]).strip()
 
 
@@ -686,7 +855,7 @@ def _build_start_kb(sessions: list[dict]) -> InlineKeyboardMarkup:
 async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     await update.message.reply_text(
-        f"내 chat\_id: `{cid}`\n\nconfig.json의 allowed\_ids에 이 값을 추가하세요.",
+        f"내 chat\\_id: `{cid}`\n\nconfig.json의 allowed\\_ids에 이 값을 추가하세요.",
         parse_mode="Markdown"
     )
 
@@ -695,7 +864,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await deny(update); return
 
-    # 기존 tmux 세션이 살아있으면 안내
     if tmux_run(["has-session", "-t", TMUX]).returncode == 0:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("기존 세션 유지 (재연결)", callback_data="reattach")],
@@ -733,6 +901,31 @@ async def cmd_esc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+async def cmd_unlock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """이 인스턴스의 세션 락 강제 해제 (본인 chat_id 소유 락만)"""
+    if not is_allowed(update):
+        await deny(update); return
+    my_chat_id = update.effective_chat.id
+    locks = _my_locks()
+    if not locks:
+        await update.message.reply_text("해제할 락이 없습니다.")
+        return
+    released, denied = [], []
+    for session_id, owner_chat_id in locks:
+        if owner_chat_id == my_chat_id or owner_chat_id == 0:
+            _lock_path(session_id).unlink(missing_ok=True)
+            released.append(session_id[:12])
+            _log("UNLOCK", f"{session_id[:12]} by chat_id={my_chat_id}")
+        else:
+            denied.append(session_id[:12])
+    lines = []
+    if released:
+        lines.append(f"✅ 해제됨: {', '.join(released)}")
+    if denied:
+        lines.append(f"⛔ 권한 없음 (다른 사용자 소유): {', '.join(denied)}")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.callback_query.answer("접근 거부", show_alert=True); return
@@ -755,32 +948,150 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "approve_yes":
-        if not bridge.awaiting_approval:
+        # P2-2: 현재 pane 상태 확인 후 적절히 처리
+        pane = pane_output()
+        clean = strip_ansi(pane).strip()
+        context = bridge.last_approval_context or "승인"
+
+        if is_approval(clean):
+            # 정상 경로: 프롬프트가 여전히 있음
+            bridge.awaiting_approval = False
+            _log("USER-ACK", "approved")
+            send_key("Enter")
+            summary = bridge.last_approval_summary or "승인"
+            try:
+                await q.edit_message_text(f"✅ 승인 · {summary}", reply_markup=None)
+            except Exception:
+                pass
+        elif bridge.is_alive():
+            # 프롬프트 만료, 세션 살아있음 → Claude에 재요청
+            bridge.awaiting_approval = False
+            _log("USER-ACK", f"late approved (prompt expired) — context={context}")
+            send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
+            try:
+                await q.edit_message_text(
+                    f"✅ 승인 · {context}\n프롬프트 만료 — Claude에 재요청했습니다",
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+        elif bridge.current_session_id:
+            # 세션 죽음 → 재시작 후 재요청
+            bridge.awaiting_approval = False
+            _log("USER-ACK", f"late approved (session dead) — context={context}")
+            ok = bridge.start(bridge.current_session_id, chat_id=q.message.chat_id)
+            if ok:
+                if bridge.task:
+                    bridge.task.cancel()
+                bridge.task = asyncio.create_task(
+                    bridge.monitor(ctx.application, q.message.chat_id)
+                )
+                await asyncio.sleep(3)
+                send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
+                try:
+                    await q.edit_message_text(
+                        f"✅ 승인 · {context}\n세션 재시작 후 이어갑니다",
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    await q.edit_message_text("세션 재시작 실패. /start로 다시 시작하세요.", reply_markup=None)
+                except Exception:
+                    pass
+        else:
             await q.answer("이미 처리됨", show_alert=False)
-            return
-        bridge.awaiting_approval = False
-        _log("USER-ACK", "approved")
-        send_key("Enter")
-        summary = bridge.last_approval_summary or "승인"
-        try:
-            await q.edit_message_text(f"✅ 승인 · {summary}", reply_markup=None)
-        except Exception:
-            pass
 
     elif data == "approve_no":
-        if not bridge.awaiting_approval:
+        # P2-3: 현재 pane 상태 확인 후 적절히 처리
+        pane = pane_output()
+        clean = strip_ansi(pane).strip()
+        context = bridge.last_approval_context or "거부"
+
+        if is_approval(clean):
+            # 정상 경로: 프롬프트가 여전히 있음
+            bridge.awaiting_approval = False
+            _log("USER-ACK", "denied")
+            send_key("Down")
+            await asyncio.sleep(0.15)
+            send_key("Enter")
+            summary = bridge.last_approval_summary or "거부"
+            try:
+                await q.edit_message_text(f"❌ 거부 · {summary}", reply_markup=None)
+            except Exception:
+                pass
+        elif bridge.is_alive():
+            # 프롬프트 만료, 세션 살아있음 → Claude에 취소 요청
+            bridge.awaiting_approval = False
+            _log("USER-ACK", f"late denied (prompt expired) — context={context}")
+            send_input(f"사용자가 '{context}' 작업을 거부했습니다. 해당 작업을 취소하고 대기해주세요.")
+            try:
+                await q.edit_message_text(
+                    f"❌ 거부 · {context}\nClaude에 취소 요청했습니다",
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+        elif bridge.current_session_id:
+            # 세션 죽음 → 재시작 여부 묻기
+            bridge.awaiting_approval = False
+            session_id = bridge.current_session_id
+            _log("USER-ACK", f"late denied (session dead) — context={context}")
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("이 세션 재시작", callback_data=f"resume_after_no:{session_id}"),
+                InlineKeyboardButton("취소",           callback_data="resume_after_no:cancel"),
+            ]])
+            try:
+                await q.edit_message_text(
+                    f"세션이 종료되었습니다.\n마지막 작업: {context}\n이 세션을 다시 시작하시겠습니까?",
+                    reply_markup=kb
+                )
+            except Exception:
+                pass
+        else:
             await q.answer("이미 처리됨", show_alert=False)
+
+    elif data.startswith("resume_after_no:"):
+        # P2-4: resume_after_no 콜백 처리
+        val = data[len("resume_after_no:"):]
+        if val == "cancel":
+            try:
+                await q.edit_message_text("취소했습니다.", reply_markup=None)
+            except Exception:
+                pass
             return
-        bridge.awaiting_approval = False
-        _log("USER-ACK", "denied")
-        send_key("Down")
-        await asyncio.sleep(0.15)
-        send_key("Enter")
-        summary = bridge.last_approval_summary or "거부"
-        try:
-            await q.edit_message_text(f"❌ 거부 · {summary}", reply_markup=None)
-        except Exception:
-            pass
+        session_id = val
+        ok = bridge.start(session_id, chat_id=q.message.chat_id)
+        if ok:
+            if bridge.task:
+                bridge.task.cancel()
+            bridge.task = asyncio.create_task(
+                bridge.monitor(ctx.application, q.message.chat_id)
+            )
+            try:
+                await q.edit_message_text("세션을 다시 시작했습니다.", reply_markup=None)
+            except Exception:
+                pass
+        else:
+            try:
+                await q.edit_message_text("재시작 실패. /start로 다시 시도해주세요.", reply_markup=None)
+            except Exception:
+                pass
+
+    elif data == "do_unlock":
+        # P3-1: 잠금 오류 메시지의 인라인 /unlock 버튼
+        my_chat_id = q.message.chat_id
+        locks = _my_locks()
+        released = []
+        for session_id, owner_chat_id in locks:
+            if owner_chat_id == my_chat_id or owner_chat_id == 0:
+                _lock_path(session_id).unlink(missing_ok=True)
+                released.append(session_id[:12])
+        if released:
+            await q.answer(f"해제됨: {', '.join(released)}", show_alert=True)
+        else:
+            await q.answer("해제할 수 있는 락이 없습니다.", show_alert=True)
 
     elif data == "toggle_perm":
         bridge.skip_permissions = not bridge.skip_permissions
@@ -817,7 +1128,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             label = f"신규 세션\n폴더: `{cwd}`"
 
         await q.edit_message_text(f"시작 중: {label}", parse_mode="Markdown")
-        ok = bridge.start(session_id)
+        ok = bridge.start(session_id, chat_id=q.message.chat_id)
 
         if ok:
             if bridge.task:
@@ -826,7 +1137,21 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 bridge.monitor(ctx.application, q.message.chat_id)
             )
         else:
-            await ctx.bot.send_message(q.message.chat_id, "시작 실패 - tmux/claude 경로를 확인하세요.")
+            if session_id and _is_locked(session_id):
+                # P3-1: 잠금 오류 메시지 UX 개선 + /unlock 인라인 버튼
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("/unlock 실행", callback_data="do_unlock")
+                ]])
+                await ctx.bot.send_message(
+                    q.message.chat_id,
+                    "⚠️ 이미 사용 중인 세션입니다. /unlock으로 해제 후 다시 시도하세요.",
+                    reply_markup=kb,
+                )
+            else:
+                await ctx.bot.send_message(
+                    q.message.chat_id,
+                    "시작 실패 - tmux/claude 경로를 확인하세요."
+                )
 
 
 IMAGE_DIR = Path(__file__).parent / "tg_images"
@@ -844,10 +1169,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     caption = (msg.caption or msg.text or "").strip()
 
-    # 이미지 처리
     if msg.photo:
-        photo = msg.photo[-1]   # 가장 큰 해상도
-        import time
+        photo = msg.photo[-1]
         fname = f"tg_{int(time.time())}.jpg"
         fpath = IMAGE_DIR / fname
         try:
@@ -855,12 +1178,11 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await f.download_to_drive(custom_path=str(fpath))
             _log("USER→BOT", f"image {fname} ({photo.file_size or 0} bytes)")
 
-            # Claude에 경로 + 캡션 전달
             payload = f"[텔레그램 이미지 첨부: {fpath}]"
             if caption:
                 payload += f"\n{caption}"
             send_input(payload)
-            _log("BOT→AI", f"forwarded image + caption")
+            _log("BOT→AI", "forwarded image + caption")
             try:
                 await msg.set_reaction("📷")
             except Exception:
@@ -870,7 +1192,6 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"이미지 수신 실패: {e}")
             return
 
-    # 일반 텍스트
     if not caption:
         return
     preview = caption[:60].replace("\n", " ")
@@ -890,10 +1211,10 @@ async def post_init(app: Application):
         BotCommand("start",  "세션 목록 / 새 세션 시작"),
         BotCommand("end",    "현재 세션 종료"),
         BotCommand("esc",    "ESC 키 전송 (취소/중단)"),
+        BotCommand("unlock", "세션 락 강제 해제"),
         BotCommand("whoami", "내 chat_id 확인 (관리자 등록용)"),
     ])
 
-    # 기존 tmux 세션이 살아있으면 자동 재연결
     check = tmux_run(["has-session", "-t", TMUX])
     if check.returncode == 0 and ALLOWED_IDS:
         chat_id = next(iter(ALLOWED_IDS))
@@ -901,10 +1222,11 @@ async def post_init(app: Application):
         bridge.task = asyncio.create_task(bridge.monitor(app, chat_id))
 
 
-def main():
+def _build_app() -> Application:
     app = (
         Application.builder()
         .token(TOKEN)
+        .request(HTTPXRequest(connect_timeout=10, read_timeout=15))  # P1-3
         .post_init(post_init)
         .build()
     )
@@ -912,14 +1234,45 @@ def main():
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("end",    cmd_end))
     app.add_handler(CommandHandler("esc",    cmd_esc))
+    app.add_handler(CommandHandler("unlock", cmd_unlock))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(
         (filters.TEXT & ~filters.COMMAND) | filters.PHOTO,
         on_message,
     ))
+    return app
 
-    _log("BOOT", "claude-bridge started (Ctrl+C to quit)")
-    app.run_polling(drop_pending_updates=True)
+
+def main():
+    # P1-2: Telegram 폴링 재연결 루프 (exponential backoff)
+    backoff = 1
+    retries = 0
+    max_retries = 10
+
+    while True:
+        try:
+            app = _build_app()
+            _log("BOOT", f"claude-bridge started (Ctrl+C to quit, attempt={retries + 1})")
+            app.run_polling(drop_pending_updates=True)
+            break  # 정상 종료 (KeyboardInterrupt 등)
+        except KeyboardInterrupt:
+            _log("SHUTDOWN", "Ctrl+C — 종료")
+            break
+        except Exception as e:
+            retries += 1
+            _log("POLLING-ERROR", f"재연결 시도 {retries}/{max_retries}: {e}")
+            if retries >= max_retries:
+                _log("POLLING-FATAL", "최대 재시도 초과 — 종료")
+                sys.exit(1)
+            # 이전 bridge monitor 정리
+            if bridge.task:
+                bridge.task.cancel()
+                bridge.task = None
+            bridge.running = False
+            wait = min(backoff, 60)
+            _log("POLLING-RETRY", f"{wait}초 후 재시도…")
+            time.sleep(wait)
+            backoff = min(backoff * 2, 60)
 
 
 if __name__ == "__main__":
