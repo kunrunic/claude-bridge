@@ -152,6 +152,37 @@ def test_has_context_limit_negative():
     assert not bot.has_context_limit("❯ 일반 입력\n")
 
 
+def test_busy_status_splits_claude_timer():
+    pane = (
+        "❯ 요청\n"
+        "✻ Compacting conversation… (26s · esc to interrupt)\n"
+    )
+    label, cc = bot.busy_status(pane)
+    assert "Compacting" in label
+    assert "26" not in label  # Claude 타이머는 분리됨
+    assert cc == "26s"
+
+
+def test_busy_status_no_claude_timer():
+    pane = "✻ Thinking… esc to interrupt\n"
+    label, cc = bot.busy_status(pane)
+    assert "Thinking" in label
+    assert cc is None
+
+
+def test_format_busy_status_with_cc():
+    out = bot._format_busy_status("Compacting conversation", "26s", 28)
+    assert "🧠 26s" in out
+    assert "🤖 28s" in out
+    assert "Compacting conversation" in out
+
+
+def test_format_busy_status_without_cc():
+    out = bot._format_busy_status("Thinking", None, 5)
+    assert "🧠" not in out
+    assert "🤖 5s" in out
+
+
 def test_has_compaction_error_detects_api_error():
     pane = (
         "❯ /compact\n"

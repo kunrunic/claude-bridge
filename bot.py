@@ -215,8 +215,28 @@ _STATUS_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-def busy_status(text: str) -> str:
-    """화면에서 실제 진행 상태 라인을 추출"""
+_CC_TIMER_RE = re.compile(r"\(\s*(\d+)\s*s\b[^)]*\)?")
+
+
+def _format_busy_status(label: str, cc_sec: str | None, bot_elapsed: int) -> str:
+    """상태 메시지 포맷.
+
+    Claude 타이머가 있으면:   ⏳ Compacting conversation · 🧠 26s · 🤖 28s
+    없으면:                    ⏳ Thinking · 🤖 12s
+    """
+    base = f"⏳ {label}"
+    if cc_sec:
+        return f"{base} · 🧠 {cc_sec} · 🤖 {bot_elapsed}s"
+    return f"{base} · 🤖 {bot_elapsed}s"
+
+
+def busy_status(text: str) -> tuple[str, str | None]:
+    """화면에서 진행 상태 라인 추출 → (액션, Claude 내장 초).
+
+    예: "✻ Compacting conversation… (26s · esc to interrupt)"
+        → ("Compacting conversation…", "26s")
+    Claude 타이머가 없으면 두 번째 값은 None.
+    """
     tail_lines = text.splitlines()[-25:]
     for line in reversed(tail_lines):
         m = _STATUS_LINE_RE.search(line)
@@ -226,8 +246,18 @@ def busy_status(text: str) -> str:
                 idx = label.lower().find(cut)
                 if idx > 0:
                     label = label[:idx].strip()
-            return label[:80]
-    return "작업 중"
+            # Claude 타이머 `(Ns ...)` 분리
+            cc_sec: str | None = None
+            tm = _CC_TIMER_RE.search(label)
+            if tm:
+                cc_sec = f"{tm.group(1)}s"
+                label = _CC_TIMER_RE.sub("", label).strip(" ·-—|")
+            # 꼬리 장식 문자 정리
+            label = label.rstrip(" ·…").strip()
+            if not label:
+                label = "작업 중"
+            return label[:80], cc_sec
+    return "작업 중", None
 
 def extract_last_response(text: str) -> str:
     """화면 출력에서 Claude의 마지막 응답만 추출"""
@@ -809,11 +839,12 @@ class Bridge:
                         # 잔존 스크롤백의 Crunched/Compacting 마커로 오탐하지 않도록
                         # busy 진입 시점의 상태를 snapshot — 이후 "새로 등장한 경우"에만 감지
                         self._pre_busy_had_compact = has_compaction(clean)
-                        label = busy_status(clean)
+                        label, cc_sec = busy_status(clean)
                         self.last_status_label = label
                         _log("AI-BUSY", label)
                         try:
-                            msg = await app.bot.send_message(chat_id, f"⏳ {label}… (0s)")
+                            init_text = _format_busy_status(label, cc_sec, 0)
+                            msg = await app.bot.send_message(chat_id, init_text)
                             self.status_msg_id = msg.message_id
                         except Exception as e:
                             _log("STATUS-MSG-ERR", str(e))
@@ -861,8 +892,8 @@ class Bridge:
 
                         if self.status_msg_id and self.busy_started_at:
                             elapsed = int(now_ts - self.busy_started_at)
-                            label = busy_status(clean)
-                            new_text = f"⏳ {label}… ({elapsed}s)"
+                            label, cc_sec = busy_status(clean)
+                            new_text = _format_busy_status(label, cc_sec, elapsed)
                             if new_text != getattr(self, "_last_status_text", ""):
                                 try:
                                     await app.bot.edit_message_text(
