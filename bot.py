@@ -176,8 +176,19 @@ def summarize_approval(text: str) -> str:
     return "승인"
 
 def is_busy(text: str) -> bool:
-    """Claude가 처리 중인지 - 마지막 BUSY_CHECK_TAIL줄만 체크"""
-    tail = "\n".join(text.splitlines()[-BUSY_CHECK_TAIL:])
+    """Claude가 처리 중인지 — 현재 상태바 영역(마지막 divider 이하)만 검사.
+    scrollback에 남은 과거 상태바의 'esc to interrupt'로 인한 오탐을 막는다.
+    """
+    lines = text.splitlines()
+    # 마지막 ~10줄 안에서 divider 찾기 (상태바 구조: divider/❯/divider/status)
+    search_window = max(0, len(lines) - 10)
+    for i in range(len(lines) - 1, search_window - 1, -1):
+        s = lines[i].strip()
+        if s and len(s) > 20 and all(c in "─" for c in s):
+            tail = "\n".join(lines[i:])
+            return bool(BUSY_RE.search(tail))
+    # divider 못 찾으면 마지막 BUSY_CHECK_TAIL줄로 fallback
+    tail = "\n".join(lines[-BUSY_CHECK_TAIL:])
     return bool(BUSY_RE.search(tail))
 
 def has_compaction(text: str) -> bool:

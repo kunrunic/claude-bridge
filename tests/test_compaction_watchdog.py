@@ -207,6 +207,46 @@ def test_context_limit_triggers_compact_dispatch(monkeypatch):
     assert br.auto_compacting is True
 
 
+def test_is_busy_ignores_stale_status_bar():
+    """과거 상태바의 'esc to interrupt'가 스크롤백에 남아있어도
+    현재 상태바에 없으면 idle로 판정해야 한다.
+    """
+    pane = (
+        "❯ 이전 요청\n"
+        "⏺ 이전 응답\n"
+        "\n"
+        "─" * 80 + "\n"
+        "❯ \n"
+        "─" * 80 + "\n"
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n"  # 과거 상태바
+        "\n"
+        "✻ Conversation compacted (ctrl+o for history)\n"
+        "\n"
+        "❯ /compact\n"
+        "  ⎿  Compacted (ctrl+o to see full summary)\n"
+        "\n"
+        "─" * 80 + "\n"
+        "❯ \n"
+        "─" * 80 + "\n"
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"  # 현재: esc 없음
+    )
+    assert bot.is_busy(pane) is False
+
+
+def test_is_busy_true_when_current_status_has_interrupt():
+    """현재 상태바에 'esc to interrupt'가 있으면 busy=True."""
+    pane = (
+        "❯ 요청\n"
+        "⏺ 작업 중\n"
+        "\n"
+        "─" * 80 + "\n"
+        "❯ \n"
+        "─" * 80 + "\n"
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n"
+    )
+    assert bot.is_busy(pane) is True
+
+
 def test_context_limit_dedupe(monkeypatch):
     """auto_compacting이 이미 True면 /compact를 중복 dispatch하지 않는다."""
     calls = []
