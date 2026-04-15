@@ -384,12 +384,13 @@ class Bridge:
         if len(self._sent_keys) > 20:
             self._sent_keys.pop(0)
 
-    def stop(self):
+    async def stop(self):
         self.running = False
         if self.task:
             self.task.cancel()
         send_input("/exit")
-        asyncio.get_event_loop().create_task(_delayed_kill())
+        await asyncio.sleep(1.5)
+        tmux_run(["kill-session", "-t", TMUX])
 
     async def monitor(self, app: Application, chat_id: int):
         self.chat_id = chat_id
@@ -585,10 +586,6 @@ bridge = Bridge()
 
 # -- 헬퍼 ----------------------------------------------------------------------
 
-async def _delayed_kill():
-    await asyncio.sleep(3)
-    tmux_run(["kill-session", "-t", TMUX])
-
 def _chunk_text(text: str, size: int = 3500) -> list[str]:
     """긴 텍스트를 줄 단위로 size 이하로 나눔"""
     chunks = []
@@ -717,8 +714,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await deny(update); return
-    bridge.stop()
     await update.message.reply_text("세션을 종료합니다.")
+    await bridge.stop()
 
 
 async def cmd_esc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
