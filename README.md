@@ -16,7 +16,7 @@
 ## 설치
 
 ```bash
-git clone https://github.com/{username}/claude-bridge.git
+git clone https://github.com/kunrunic/claude-bridge.git
 cd claude-bridge
 ./setup.sh
 ```

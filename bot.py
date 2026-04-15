@@ -170,9 +170,24 @@ def extract_last_response(text: str) -> str:
         s = line.strip()
         return bool(s) and len(s) > 20 and all(c in "─" for c in s)
 
-    # 입력창 영역 찾기: 하단에서 위로 올라가며 dividers 모두 수집
-    # 입력창은 보통 [divider, ❯ ..., divider] 형태 → 가장 위쪽 divider 위치까지 자름
     end = len(lines)
+
+    # 1) 승인 박스/입력창 경계 감지 — "Do you want to proceed?" 또는 " Bash command" 같은 tool 헤더 직전의 divider 찾기
+    #    범위: 전체 (승인 박스는 길 수 있음)
+    prompt_idx = -1
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        if "Do you want to proceed" in line or line == "Do you want to":
+            prompt_idx = i
+            break
+    if prompt_idx > 0:
+        # proceed 위로 올라가며 첫 divider 찾기 → 승인 박스 시작점
+        for i in range(prompt_idx - 1, max(-1, prompt_idx - 60), -1):
+            if is_divider(lines[i]):
+                end = min(end, i)
+                break
+
+    # 2) 입력창 divider (마지막 ~15줄)
     divider_positions = []
     for i in range(len(lines) - 1, max(-1, len(lines) - 15), -1):
         if is_divider(lines[i]):
