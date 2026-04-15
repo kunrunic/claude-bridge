@@ -403,6 +403,18 @@ class Bridge:
         settle = 0
         pending = ""
 
+        # 부팅 시점에 pane에 이미 있던 ⏺ 응답은 "이미 사용자가 본 것"으로 간주해
+        # 재전송하지 않도록 시드한다 (다중 인스턴스/재기동 대비).
+        try:
+            seed_clean = strip_ansi(pane_output()).strip()
+            seed_resp  = extract_last_response(seed_clean)
+            if seed_resp:
+                self.last_sent = seed_resp
+                self._mark_sent(seed_resp)
+                _log("BOOT-SEED", f"마지막 ⏺ 블록 {len(seed_resp)}자 무시 처리")
+        except Exception as e:
+            print(f"[boot seed error] {e}")
+
         while self.running:
             try:
                 check = tmux_run(["has-session", "-t", TMUX])
@@ -619,12 +631,34 @@ async def _send_output(app: Application, chat_id: int, text: str):
                 print(f"[send plain failed: {e2}]")
         await asyncio.sleep(0.2)
 
+def _approval_box(text: str) -> str:
+    """'Do you want to proceed?' 위쪽 가장 가까운 divider~prompt 사이만 추출."""
+    lines = text.splitlines()
+    proceed = -1
+    for i in range(len(lines) - 1, -1, -1):
+        if "Do you want to" in lines[i]:
+            proceed = i
+            break
+    if proceed < 0:
+        return text[-400:]
+    start = max(0, proceed - 30)
+    for i in range(proceed - 1, start - 1, -1):
+        s = lines[i].strip()
+        if s and len(s) > 20 and all(c in "─" for c in s):
+            start = i + 1
+            break
+    end = min(len(lines), proceed + 6)  # Yes/No/Esc 안내 몇 줄 포함
+    return "\n".join(lines[start:end]).strip()
+
+
 async def _send_approval(app: Application, chat_id: int, text: str):
     kb = [[
         InlineKeyboardButton("Yes (승인)", callback_data="approve_yes"),
         InlineKeyboardButton("No (거부)",  callback_data="approve_no"),
     ]]
-    snippet = text[-1200:] if len(text) > 1200 else text
+    snippet = _approval_box(text)
+    if len(snippet) > 1200:
+        snippet = snippet[-1200:]
     try:
         await app.bot.send_message(
             chat_id,
