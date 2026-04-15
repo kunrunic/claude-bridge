@@ -605,6 +605,7 @@ class Bridge:
         self.saw_compaction: bool = False       # P1: busy 도중 압축 감지 플래그
         self.busy_pane_hash: str = ""            # P2: busy 중 pane 내용 hash
         self.busy_last_change_at: float | None = None  # P2: pane 마지막 변경 시각
+        self.auto_compacting: bool = False       # Context limit 자동 /compact 진행 중
         settle = 0
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
@@ -681,6 +682,32 @@ class Bridge:
 
                     if self.limit_reported and not LIMIT_RE.search(clean):
                         self.limit_reported = False
+
+                    # Context limit 자동 대응 — Claude Code가 입력을 거부하므로
+                    # 봇이 /compact를 대신 dispatch해서 흐름을 풀어준다.
+                    if has_context_limit(clean):
+                        if not self.auto_compacting:
+                            self.auto_compacting = True
+                            _log("AI-CTX-LIMIT", "dispatching /compact")
+                            try:
+                                await app.bot.send_message(
+                                    chat_id,
+                                    "⚠️ Context limit 도달 — 자동 압축 실행 중. "
+                                    "완료되면 메시지를 다시 보내주세요."
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                send_input("/compact")
+                            except Exception as e:
+                                _log("CTX-LIMIT-SEND-FAIL", str(e))
+                        await asyncio.sleep(2)
+                        continue
+
+                    # 자동 압축 해제: limit 흔적이 사라지고 busy도 아닐 때
+                    if self.auto_compacting and not is_busy(clean):
+                        self.auto_compacting = False
+                        _log("AI-CTX-LIMIT", "auto-compact resolved")
 
                     if is_approval(clean) and not self.awaiting_approval:
                         # Fix 2: 승인창 위 새 ⏺ 응답이 있으면 먼저 전송
@@ -833,15 +860,16 @@ class Bridge:
                             self.last_sent = response
                             self._mark_sent(response)
                         else:
-                            note = "ℹ️ 컨텍스트 압축 발생 — 메시지를 다시 보내주세요."
-                            if has_context_limit(clean):
-                                note = "ℹ️ Context limit 도달로 자동 압축됨 — 메시지를 다시 보내주세요."
-                            try:
-                                await app.bot.send_message(chat_id, note)
-                            except Exception:
-                                pass
+                            # auto_compacting 상태면 이미 /compact dispatch 시점에 안내했으므로 중복 생략
+                            if not self.auto_compacting:
+                                note = "ℹ️ 컨텍스트 압축 발생 — 메시지를 다시 보내주세요."
+                                try:
+                                    await app.bot.send_message(chat_id, note)
+                                except Exception:
+                                    pass
                             _log("AI-COMPACT-NOSEND", "response not found post-compact")
                         self.saw_compaction = False
+                        self.auto_compacting = False
                         self.busy_pane_hash = ""
                         self.busy_last_change_at = None
                         # settle 로직이 동일 내용 재전송하지 않도록 hash/pending 동기화
