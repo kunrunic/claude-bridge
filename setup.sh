@@ -97,14 +97,18 @@ if [ -z "$BOT_TOKEN" ]; then
 fi
 
 # ── 7. config.json 임시 작성 ─────────────────────────────────
+# 폴더 이름 기반 tmux 세션명 자동 설정 (여러 인스턴스 동시 운영 대응)
+TMUX_NAME=$(basename "$PWD" | tr '-' '_')
+
 cat > config.json <<EOF
 {
   "token": "$BOT_TOKEN",
   "allowed_ids": [],
-  "tmux_session": "claude_bridge",
+  "tmux_session": "$TMUX_NAME",
   "claude_path": "$CLAUDE_PATH"
 }
 EOF
+echo "✓ tmux 세션명: $TMUX_NAME"
 
 # ── 8. 봇 일시 실행 → /whoami 로 chat_id 수집 ──────────────────
 echo
@@ -141,7 +145,7 @@ cat > config.json <<EOF
 {
   "token": "$BOT_TOKEN",
   "allowed_ids": [$CHAT_ID],
-  "tmux_session": "claude_bridge",
+  "tmux_session": "$TMUX_NAME",
   "claude_path": "$CLAUDE_PATH"
 }
 EOF

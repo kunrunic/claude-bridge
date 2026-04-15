@@ -41,6 +41,24 @@ cd claude-bridge
 - 로그: `logs/YYYY-MM-DD.log` (일별, 3일 보관 후 자동 삭제)
 - PID: `.bot.pid` (중복 실행 방지)
 
+### 여러 인스턴스 동시 운영
+
+폴더를 복제해서 각각 setup 하면 됩니다. 각 폴더는 독립된 `config.json`/`logs/`/`.bot.pid` 를 가지며 `tmux_session` 이름은 **폴더명에서 자동 파생**됩니다.
+
+```bash
+# 예: 업무용 / 개인용 2개 운영
+cp -r claude-bridge claude-bridge-work
+cp -r claude-bridge claude-bridge-personal
+# 각각 다른 봇 토큰으로 setup
+(cd claude-bridge-work && ./setup.sh)
+(cd claude-bridge-personal && ./setup.sh)
+# 동시 실행
+(cd claude-bridge-work && ./start.sh)
+(cd claude-bridge-personal && ./start.sh)
+```
+
+→ tmux 세션명: `claude_bridge_work`, `claude_bridge_personal` 로 자동 분리됨.
+
 ## 텔레그램 명령어
 
 | 명령 | 동작 |
