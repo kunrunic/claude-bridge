@@ -31,6 +31,9 @@ MAX_SENT_HISTORY    = 20    # 중복 방지 히스토리 최대 개수
 STOP_WAIT_SEC       = 5     # stop() /exit 후 대기 초
 MAX_MSG_CHARS       = 3500  # Telegram 메시지 최대 길이
 BUSY_CHECK_TAIL     = 20    # busy 감지 꼬리 줄 수
+BUSY_TIMEOUT_SEC    = 600   # busy 최대 지속 시간 — 초과 시 watchdog 발동 (P0)
+BUSY_STUCK_SEC      = 300   # pane 내용 무변화 지속 시 stuck 판정 (P2)
+COMPACT_SCAN_LINES  = 40    # 압축 이벤트 감지 스캔 범위
 
 # -- 설정 -----------------------------------------------------------------------
 
@@ -94,6 +97,10 @@ TRUST_RE    = re.compile(
 BUSY_RE     = re.compile(r"esc to interrupt")
 # 사용량 한도 초과 감지
 LIMIT_RE    = re.compile(r"You've hit your limit|hit your (daily )?limit", re.IGNORECASE)
+# 컨텍스트 압축 이벤트 (자동 /compact 또는 'Crunched for N' 요약 라인)
+COMPACT_RE  = re.compile(r"Compacting conversation|Crunched\s+for\s+\d+", re.IGNORECASE)
+# Context limit 도달 (CB2 케이스 — 사용자 메시지가 처리되지 못하고 압축이 강제됨)
+CONTEXT_LIMIT_RE = re.compile(r"Context limit reached", re.IGNORECASE)
 ANSI_RE     = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 # -- tmux 유틸 -----------------------------------------------------------------
@@ -172,6 +179,16 @@ def is_busy(text: str) -> bool:
     """Claude가 처리 중인지 - 마지막 BUSY_CHECK_TAIL줄만 체크"""
     tail = "\n".join(text.splitlines()[-BUSY_CHECK_TAIL:])
     return bool(BUSY_RE.search(tail))
+
+def has_compaction(text: str) -> bool:
+    """pane tail에 컨텍스트 압축 이벤트 흔적이 있는지 — P1"""
+    tail = "\n".join(text.splitlines()[-COMPACT_SCAN_LINES:])
+    return bool(COMPACT_RE.search(tail))
+
+def has_context_limit(text: str) -> bool:
+    """'Context limit reached' 표식이 tail에 있는지 — CB2 케이스 식별용"""
+    tail = "\n".join(text.splitlines()[-COMPACT_SCAN_LINES:])
+    return bool(CONTEXT_LIMIT_RE.search(tail))
 
 _STATUS_LINE_RE = re.compile(
     r"(?:[·✻⋯*]\s*)?"
@@ -517,6 +534,65 @@ class Bridge:
             _release_lock(sid)
         self.current_session_id = None
 
+    async def _busy_watchdog(
+        self,
+        app: Application,
+        chat_id: int,
+        clean: str,
+        *,
+        reason: str,
+    ) -> None:
+        """busy 상태가 비정상적으로 오래 지속되거나 화면이 얼어붙었을 때 호출.
+        pane에서 마지막 ⏺ 응답을 추출해 복구 전송하고, 없으면 재전송 안내.
+        어떤 경우든 busy state를 강제로 리셋한다.
+        """
+        _log("AI-WATCHDOG", f"trigger={reason}")
+
+        if self.status_msg_id:
+            try:
+                await app.bot.delete_message(chat_id, self.status_msg_id)
+            except Exception:
+                pass
+            self.status_msg_id = None
+            self._last_status_text = ""
+
+        response = extract_last_response(clean)
+        has_new = (
+            response
+            and "⏺" in response
+            and response != self.last_sent
+            and not self._already_sent(response)
+        )
+
+        if has_new:
+            try:
+                await app.bot.send_message(chat_id, f"⚠️ {reason} — 직전 응답 복구")
+            except Exception:
+                pass
+            _log("AI→BOT", f"watchdog recovery ({len(response)} chars)")
+            try:
+                await _send_output(app, chat_id, response)
+                _log("BOT→USER", "delivered (watchdog)")
+            except Exception as e:
+                _log("WATCHDOG-SEND-FAIL", str(e))
+            self.last_sent = response
+            self._mark_sent(response)
+        else:
+            try:
+                await app.bot.send_message(
+                    chat_id,
+                    f"⚠️ {reason}. 응답을 복구하지 못했습니다. 메시지를 다시 보내주세요.",
+                )
+            except Exception:
+                pass
+
+        self.was_busy = False
+        self.busy_started_at = None
+        self.busy_pane_hash = ""
+        self.busy_last_change_at = None
+        self.saw_compaction = False
+        self.last_hash = hashlib.md5(clean.encode()).hexdigest()
+
     async def monitor(self, app: Application, chat_id: int):
         self.chat_id = chat_id
         self.running = True
@@ -526,6 +602,9 @@ class Bridge:
         self.status_msg_id: int | None = None
         self.busy_started_at: float | None = None
         self.last_status_label = ""
+        self.saw_compaction: bool = False       # P1: busy 도중 압축 감지 플래그
+        self.busy_pane_hash: str = ""            # P2: busy 중 pane 내용 hash
+        self.busy_last_change_at: float | None = None  # P2: pane 마지막 변경 시각
         settle = 0
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
@@ -654,6 +733,10 @@ class Bridge:
                     if busy_now and not self.was_busy:
                         self.was_busy = True
                         self.busy_started_at = time.time()
+                        # P2: busy 진입 시 pane hash 추적 초기화
+                        self.busy_pane_hash = hashlib.md5(clean.encode()).hexdigest()
+                        self.busy_last_change_at = time.time()
+                        self.saw_compaction = False
                         label = busy_status(clean)
                         self.last_status_label = label
                         _log("AI-BUSY", label)
@@ -664,10 +747,42 @@ class Bridge:
                             _log("STATUS-MSG-ERR", str(e))
                             self.status_msg_id = None
 
-                    # busy 지속: 상태 메시지 편집
+                    # busy 지속: 상태 메시지 편집 + watchdog
                     if busy_now:
+                        # P1: 압축 이벤트 감지 (한 번만 로그)
+                        if not self.saw_compaction and has_compaction(clean):
+                            self.saw_compaction = True
+                            _log("AI-COMPACT", "compaction detected during busy")
+
+                        # P2: pane 내용 변화 추적
+                        cur_hash = hashlib.md5(clean.encode()).hexdigest()
+                        now_ts = time.time()
+                        if cur_hash != self.busy_pane_hash:
+                            self.busy_pane_hash = cur_hash
+                            self.busy_last_change_at = now_ts
+
+                        # P0/P2: watchdog 트리거 판정
+                        timeout_trigger = (
+                            self.busy_started_at
+                            and now_ts - self.busy_started_at > BUSY_TIMEOUT_SEC
+                        )
+                        stuck_trigger = (
+                            self.busy_last_change_at
+                            and now_ts - self.busy_last_change_at > BUSY_STUCK_SEC
+                        )
+                        if timeout_trigger or stuck_trigger:
+                            reason = (
+                                f"작업 {int(now_ts - self.busy_started_at)}초 초과"
+                                if timeout_trigger
+                                else f"화면 {int(now_ts - self.busy_last_change_at)}초 멈춤"
+                            )
+                            await self._busy_watchdog(app, chat_id, clean, reason=reason)
+                            pending = ""
+                            await asyncio.sleep(1)
+                            continue
+
                         if self.status_msg_id and self.busy_started_at:
-                            elapsed = int(time.time() - self.busy_started_at)
+                            elapsed = int(now_ts - self.busy_started_at)
                             label = busy_status(clean)
                             new_text = f"⏳ {label}… ({elapsed}s)"
                             if new_text != getattr(self, "_last_status_text", ""):
@@ -692,6 +807,49 @@ class Bridge:
                             pass
                         self.status_msg_id = None
                         self._last_status_text = ""
+
+                    # P1: 압축을 거쳐 빠져나온 경우 — 응답 복구 or 재전송 안내
+                    if self.was_busy and self.saw_compaction:
+                        response = extract_last_response(clean)
+                        has_new = (
+                            response
+                            and "⏺" in response
+                            and response != self.last_sent
+                            and not self._already_sent(response)
+                        )
+                        if has_new:
+                            try:
+                                await app.bot.send_message(
+                                    chat_id, "ℹ️ 컨텍스트 압축 후 응답 복구"
+                                )
+                            except Exception:
+                                pass
+                            _log("AI→BOT", f"post-compact ({len(response)} chars)")
+                            try:
+                                await _send_output(app, chat_id, response)
+                                _log("BOT→USER", "delivered (post-compact)")
+                            except Exception as e:
+                                _log("POST-COMPACT-SEND-FAIL", str(e))
+                            self.last_sent = response
+                            self._mark_sent(response)
+                        else:
+                            note = "ℹ️ 컨텍스트 압축 발생 — 메시지를 다시 보내주세요."
+                            if has_context_limit(clean):
+                                note = "ℹ️ Context limit 도달로 자동 압축됨 — 메시지를 다시 보내주세요."
+                            try:
+                                await app.bot.send_message(chat_id, note)
+                            except Exception:
+                                pass
+                            _log("AI-COMPACT-NOSEND", "response not found post-compact")
+                        self.saw_compaction = False
+                        self.busy_pane_hash = ""
+                        self.busy_last_change_at = None
+                        # settle 로직이 동일 내용 재전송하지 않도록 hash/pending 동기화
+                        self.last_hash = hashlib.md5(clean.encode()).hexdigest()
+                        pending = ""
+                        self.was_busy = False
+                        await asyncio.sleep(1)
+                        continue
 
                     # 대기 상태 → SETTLE_TICKS 안정 후 전송
                     h = hashlib.md5(clean.encode()).hexdigest()
