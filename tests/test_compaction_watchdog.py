@@ -167,6 +167,45 @@ def test_has_compaction_error_negative():
     assert not bot.has_compaction_error("❯ 일반 입력\n")
 
 
+def test_parse_model_options_from_real_picker():
+    """실제 /model 피커 포맷 파싱."""
+    pane = (
+        "Select model\n"
+        "  Switch between Claude models.\n"
+        "\n"
+        "    1. Default (recommended)         Sonnet 4.6 · Best for everyday tasks\n"
+        "    2. Opus                          Opus 4.6 · Most capable for complex work\n"
+        "    3. Haiku                         Haiku 4.5 · Fastest for quick answers\n"
+        "  ❯ 4. sonnet (claude-sonnet-4-6) ✔️  Current model\n"
+        "\n"
+        "  Enter to confirm · Esc to exit\n"
+    )
+    opts = bot._parse_model_options(pane.splitlines())
+    assert [o["num"] for o in opts] == [1, 2, 3, 4]
+    assert opts[0]["name"].startswith("Default")
+    assert opts[1]["name"].startswith("Opus")
+    assert opts[2]["name"].startswith("Haiku")
+    assert opts[3]["current"] is True
+    assert all(not o["current"] for o in opts[:3])
+
+
+def test_parse_model_options_empty_on_non_picker():
+    assert bot._parse_model_options(["❯ 일반 프롬프트", "⏺ 응답"]) == []
+
+
+def test_find_picker_cursor():
+    pane_lines = [
+        "    1. Default         Sonnet 4.6",
+        "  ❯ 2. Opus            Opus 4.6",
+        "    3. Haiku           Haiku 4.5",
+    ]
+    assert bot._find_picker_cursor(pane_lines) == 2
+
+
+def test_find_picker_cursor_none_when_no_arrow():
+    assert bot._find_picker_cursor(["    1. Default", "    2. Opus"]) is None
+
+
 def test_compact_error_halts_auto_compact_loop():
     """compact_error_halted 상태에서는 has_context_limit가 있어도 /compact를 재전송 안 함."""
     br = bot.Bridge()

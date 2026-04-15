@@ -1076,6 +1076,42 @@ async def _send_approval(app: Application, chat_id: int, text: str):
         )
 
 
+_PICKER_OPT_RE = re.compile(r"^\s*(?P<arrow>❯)?\s*(?P<num>\d+)\.\s+(?P<name>.+?)(?:\s{2,}|$)")
+
+
+def _parse_model_options(lines: list[str]) -> list[dict]:
+    """/model 피커 라인에서 옵션 목록 추출.
+
+    리턴: [{"num": int, "name": str, "current": bool}, ...]
+    - 같은 번호가 여러 번 보이면 마지막 것만 유지 (TUI 재렌더 안전)
+    """
+    found: dict[int, dict] = {}
+    for ln in lines:
+        m = _PICKER_OPT_RE.match(ln)
+        if not m:
+            continue
+        num = int(m.group("num"))
+        name = m.group("name").strip()
+        # 긴 설명은 잘라내기
+        if len(name) > 40:
+            name = name[:40].rstrip()
+        found[num] = {
+            "num": num,
+            "name": name,
+            "current": bool(m.group("arrow")),
+        }
+    return [found[k] for k in sorted(found)]
+
+
+def _find_picker_cursor(lines: list[str]) -> int | None:
+    """현재 ❯ 커서가 가리키는 옵션 번호."""
+    for ln in lines:
+        m = _PICKER_OPT_RE.match(ln)
+        if m and m.group("arrow"):
+            return int(m.group("num"))
+    return None
+
+
 async def _send_model_switch_prompt(app: Application, chat_id: int):
     """/compact가 API 에러로 실패 → 표준 모델 전환 버튼 안내."""
     kb = InlineKeyboardMarkup([[
@@ -1330,7 +1366,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 pass
 
     elif data == "open_model_picker":
-        # /compact 실패 → 사용자에게 /model 피커 화면을 포워딩
+        # /compact 실패 → /model 피커를 열고 현재 옵션들을 버튼으로 포워딩
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -1353,21 +1389,88 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if s and len(s) > 20 and all(c in "─" for c in s):
                 start = i + 1
                 break
-        snippet = "\n".join(lines[start:]).strip()
+        picker_lines = lines[start:]
+        snippet = "\n".join(picker_lines).strip()
         if len(snippet) > 1800:
             snippet = snippet[-1800:]
-        body = (
-            "📋 /model 피커 화면:\n```\n"
-            f"{snippet}\n```\n"
-            "원하는 모델의 **번호** 또는 **이름**을 답장으로 보내세요. "
-            "(`esc`/`취소` 입력 시 /esc 로 피커 닫기)"
-        )
+
+        # 피커 옵션 동적 파싱: "  1. Default  Sonnet 4.6 · ..." / "❯ 4. sonnet ..."
+        options = _parse_model_options(picker_lines)
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        for opt in options:
+            label = f"{opt['num']}. {opt['name']}"
+            if opt['current']:
+                label += " ✔️"
+            kb_rows.append([InlineKeyboardButton(
+                label[:64], callback_data=f"pick_model:{opt['num']}"
+            )])
+        kb_rows.append([InlineKeyboardButton("✖ 취소 (Esc)", callback_data="pick_model:esc")])
+
+        if options:
+            body = (
+                "📋 /model 피커:\n```\n"
+                f"{snippet}\n```\n"
+                "버튼으로 선택하세요. (현재 모델에는 ✔️ 표시)"
+            )
+        else:
+            body = (
+                "📋 /model 피커 화면:\n```\n"
+                f"{snippet}\n```\n"
+                "버튼 파싱 실패 — 번호/이름을 답장으로 보내세요."
+            )
         try:
             await ctx.bot.send_message(
-                q.message.chat_id, body, parse_mode="Markdown"
+                q.message.chat_id, body,
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+                parse_mode="Markdown",
             )
         except Exception:
-            await ctx.bot.send_message(q.message.chat_id, body[:3900])
+            await ctx.bot.send_message(
+                q.message.chat_id, body[:3900],
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+            )
+
+    elif data.startswith("pick_model:"):
+        choice = data.split(":", 1)[1]
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if choice == "esc":
+            send_key("Escape")
+            _log("USER-ACK", "model picker cancelled")
+            try:
+                await q.answer("피커 닫음", show_alert=False)
+            except Exception:
+                pass
+            return
+        # 현재 pane에서 ❯ 위치 읽어 화살표로 네비 후 Enter
+        pane = pane_output()
+        clean = strip_ansi(pane).strip()
+        cur = _find_picker_cursor(clean.splitlines())
+        try:
+            target = int(choice)
+        except ValueError:
+            await q.answer("잘못된 선택", show_alert=True)
+            return
+        if cur is None:
+            # fallback: 숫자 + Enter 시도
+            send_input(str(target))
+            _log("USER-ACK", f"model pick (fallback) {target}")
+        else:
+            delta = target - cur
+            key = "Down" if delta > 0 else "Up"
+            for _ in range(abs(delta)):
+                send_key(key)
+                await asyncio.sleep(0.08)
+            await asyncio.sleep(0.15)
+            send_key("Enter")
+            _log("USER-ACK", f"model pick {cur}→{target}")
+        try:
+            await q.answer(f"선택: {target}", show_alert=False)
+        except Exception:
+            pass
+
 
     elif data == "do_unlock":
         # P3-1: 잠금 오류 메시지의 인라인 /unlock 버튼
