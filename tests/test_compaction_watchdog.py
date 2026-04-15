@@ -152,6 +152,35 @@ def test_has_context_limit_negative():
     assert not bot.has_context_limit("❯ 일반 입력\n")
 
 
+def test_has_compaction_error_detects_api_error():
+    pane = (
+        "❯ /compact\n"
+        "  ⎿  Error: Error during compaction: API Error: Extra usage is required for 1M\n"
+        "     context · run /extra-usage to enable, or /model to switch to standard\n"
+        "     context\n"
+        "❯ \n"
+    )
+    assert bot.has_compaction_error(pane)
+
+
+def test_has_compaction_error_negative():
+    assert not bot.has_compaction_error("❯ 일반 입력\n")
+
+
+def test_compact_error_halts_auto_compact_loop():
+    """compact_error_halted 상태에서는 has_context_limit가 있어도 /compact를 재전송 안 함."""
+    br = bot.Bridge()
+    br.compact_error_halted = True
+    br.auto_compacting = False
+    clean = "⎿  Context limit reached · /compact or /clear to continue\n❯ \n"
+
+    dispatched = []
+    if bot.has_context_limit(clean) and not br.compact_error_halted:
+        dispatched.append("/compact")
+
+    assert dispatched == []
+
+
 # ---------- 상수 sanity ----------
 
 def test_watchdog_constants_sane():

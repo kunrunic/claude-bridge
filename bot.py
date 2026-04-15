@@ -101,6 +101,8 @@ LIMIT_RE    = re.compile(r"You've hit your limit|hit your (daily )?limit", re.IG
 COMPACT_RE  = re.compile(r"Compacting conversation|Crunched\s+for\s+\d+", re.IGNORECASE)
 # Context limit 도달 (CB2 케이스 — 사용자 메시지가 처리되지 못하고 압축이 강제됨)
 CONTEXT_LIMIT_RE = re.compile(r"Context limit reached", re.IGNORECASE)
+# /compact가 API 에러로 실패한 경우 (1M 컨텍스트 + Extra Usage 미활성 등)
+COMPACT_ERROR_RE = re.compile(r"Error during compaction", re.IGNORECASE)
 ANSI_RE     = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 # -- tmux 유틸 -----------------------------------------------------------------
@@ -200,6 +202,11 @@ def has_context_limit(text: str) -> bool:
     """'Context limit reached' 표식이 tail에 있는지 — CB2 케이스 식별용"""
     tail = "\n".join(text.splitlines()[-COMPACT_SCAN_LINES:])
     return bool(CONTEXT_LIMIT_RE.search(tail))
+
+def has_compaction_error(text: str) -> bool:
+    """'Error during compaction' — /compact가 API 단에서 거절된 경우"""
+    tail = "\n".join(text.splitlines()[-COMPACT_SCAN_LINES:])
+    return bool(COMPACT_ERROR_RE.search(tail))
 
 _STATUS_LINE_RE = re.compile(
     r"(?:[·✻⋯*]\s*)?"
@@ -618,6 +625,7 @@ class Bridge:
         self.busy_pane_hash: str = ""            # P2: busy 중 pane 내용 hash
         self.busy_last_change_at: float | None = None  # P2: pane 마지막 변경 시각
         self.auto_compacting: bool = False       # Context limit 자동 /compact 진행 중
+        self.compact_error_halted: bool = False  # /compact 실패 감지 → 재시도 중단
         settle = 0
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
@@ -695,9 +703,31 @@ class Bridge:
                     if self.limit_reported and not LIMIT_RE.search(clean):
                         self.limit_reported = False
 
+                    # /compact 실패 감지 — API 에러 (1M 컨텍스트 Extra Usage 미활성 등).
+                    # 자동 재dispatch 루프를 막고 사용자가 /model로 전환하도록 버튼 안내.
+                    if has_compaction_error(clean):
+                        if not self.compact_error_halted:
+                            self.compact_error_halted = True
+                            self.auto_compacting = False
+                            _log("AI-COMPACT-ERR", "halt auto-compact; prompt model switch")
+                            try:
+                                await _send_model_switch_prompt(app, chat_id)
+                            except Exception as e:
+                                _log("MODEL-SWITCH-SEND-FAIL", str(e))
+                        await asyncio.sleep(2)
+                        continue
+
+                    # 에러가 pane에서 사라지고 limit도 해제됐으면 halted 플래그 복구
+                    if (self.compact_error_halted
+                            and not has_compaction_error(clean)
+                            and not has_context_limit(clean)):
+                        self.compact_error_halted = False
+                        _log("AI-COMPACT-ERR", "resolved (limit cleared)")
+
                     # Context limit 자동 대응 — Claude Code가 입력을 거부하므로
                     # 봇이 /compact를 대신 dispatch해서 흐름을 풀어준다.
-                    if has_context_limit(clean):
+                    # (compact_error_halted 중에는 재시도하지 않음)
+                    if has_context_limit(clean) and not self.compact_error_halted:
                         if not self.auto_compacting:
                             self.auto_compacting = True
                             _log("AI-CTX-LIMIT", "dispatching /compact")
@@ -1045,6 +1075,20 @@ async def _send_approval(app: Application, chat_id: int, text: str):
             reply_markup=InlineKeyboardMarkup(kb),
         )
 
+
+async def _send_model_switch_prompt(app: Application, chat_id: int):
+    """/compact가 API 에러로 실패 → 표준 모델 전환 버튼 안내."""
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📋 /model 열기", callback_data="open_model_picker"),
+    ]])
+    await app.bot.send_message(
+        chat_id,
+        "⚠️ 자동 압축 실패 — 1M 컨텍스트에 Extra Usage 미활성입니다.\n"
+        "버튼을 누르면 `/model` 피커를 열고 현재 화면을 여기로 전달합니다. "
+        "원하는 모델 번호나 이름을 답장으로 보내면 그대로 입력됩니다.",
+        reply_markup=kb,
+    )
+
 # -- 핸들러 -------------------------------------------------------------------
 
 def _build_start_kb(sessions: list[dict]) -> InlineKeyboardMarkup:
@@ -1284,6 +1328,46 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text("재시작 실패. /start로 다시 시도해주세요.", reply_markup=None)
             except Exception:
                 pass
+
+    elif data == "open_model_picker":
+        # /compact 실패 → 사용자에게 /model 피커 화면을 포워딩
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        try:
+            send_input("/model")
+        except Exception as e:
+            _log("MODEL-OPEN-FAIL", str(e))
+            await q.answer("입력 실패", show_alert=True)
+            return
+        # TUI 렌더 안정화 대기
+        await asyncio.sleep(0.8)
+        pane = pane_output()
+        clean = strip_ansi(pane).strip()
+        lines = clean.splitlines()
+        # 가장 아래에서 위로 divider 찾아 피커 박스만 추출
+        start = max(0, len(lines) - 40)
+        for i in range(len(lines) - 1, start - 1, -1):
+            s = lines[i].strip()
+            if s and len(s) > 20 and all(c in "─" for c in s):
+                start = i + 1
+                break
+        snippet = "\n".join(lines[start:]).strip()
+        if len(snippet) > 1800:
+            snippet = snippet[-1800:]
+        body = (
+            "📋 /model 피커 화면:\n```\n"
+            f"{snippet}\n```\n"
+            "원하는 모델의 **번호** 또는 **이름**을 답장으로 보내세요. "
+            "(`esc`/`취소` 입력 시 /esc 로 피커 닫기)"
+        )
+        try:
+            await ctx.bot.send_message(
+                q.message.chat_id, body, parse_mode="Markdown"
+            )
+        except Exception:
+            await ctx.bot.send_message(q.message.chat_id, body[:3900])
 
     elif data == "do_unlock":
         # P3-1: 잠금 오류 메시지의 인라인 /unlock 버튼
