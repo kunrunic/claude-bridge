@@ -6,12 +6,14 @@ cd "$(dirname "$0")"
 
 PID_FILE=".bot.pid"
 
+INSTANCE_NAME=$(basename "$PWD")
+
 if [ ! -f "$PID_FILE" ]; then
     echo "실행 중인 봇 없음 (PID 파일 없음)."
-    # 혹시 남은 프로세스 찾아서 종료
-    LEFTOVER=$(pgrep -f "python.*bot.py" | head -1 || true)
+    # 해당 인스턴스명으로만 정확히 검색 (다른 Python 프로세스 절대 안전)
+    LEFTOVER=$(pgrep -f "bot\.py $INSTANCE_NAME\$" | head -1 || true)
     if [ -n "$LEFTOVER" ]; then
-        echo "남은 프로세스 발견 (PID=$LEFTOVER). 종료합니다."
+        echo "이 폴더의 남은 프로세스 발견 (PID=$LEFTOVER). 종료합니다."
         kill $LEFTOVER 2>/dev/null || true
     fi
     exit 0

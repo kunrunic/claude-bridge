@@ -39,7 +39,8 @@ find "$LOG_DIR" -name "*.log" -type f -mtime +3 -delete 2>/dev/null || true
 
 # 백그라운드 실행
 source venv/bin/activate
-nohup python -u bot.py >> "$LOG_FILE" 2>&1 &
+INSTANCE_NAME=$(basename "$PWD")
+nohup python -u bot.py "$INSTANCE_NAME" >> "$LOG_FILE" 2>&1 &
 BOT_PID=$!
 
 echo $BOT_PID > "$PID_FILE"
