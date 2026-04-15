@@ -376,6 +376,16 @@ class Bridge:
             return "[권한 스킵 ON]  탭하면 OFF"
         return "[권한 확인 ON]  탭하면 스킵"
 
+    def _similar_to_last_sent(self, text: str) -> bool:
+        """pre-busy / pre-approval flush 중복 방지용 유사도 체크.
+        각 응답의 마지막 3줄(비어있지 않은)이 같으면 같은 turn 응답으로 간주."""
+        if not self.last_sent:
+            return False
+        def _tail(s: str) -> str:
+            lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+            return "\n".join(lines[-3:])
+        return _tail(text) == _tail(self.last_sent)
+
     def stop(self):
         self.running = False
         if self.task:
@@ -434,8 +444,11 @@ class Bridge:
 
                 if is_approval(clean) and not self.awaiting_approval:
                     # Fix 2: 승인창 위 새 ⏺ 응답이 있으면 먼저 전송
+                    # pre-busy flush 에서 이미 보냈으면 중복 방지
                     response = extract_last_response(clean)
-                    if response and "⏺" in response and response != self.last_sent:
+                    if (response and "⏺" in response
+                            and response != self.last_sent
+                            and not self._similar_to_last_sent(response)):
                         _log("AI→BOT", f"pre-approval flush ({len(response)} chars)")
                         await _send_output(app, chat_id, response)
                         _log("BOT→USER", "delivered (pre-approval flush)")
@@ -466,7 +479,9 @@ class Bridge:
                 # (연쇄 tool 호출 사이에 낀 중간 설명이 drop 되는 것 방지)
                 if busy_now and not self.was_busy:
                     response = extract_last_response(clean)
-                    if response and "⏺" in response and response != self.last_sent:
+                    if (response and "⏺" in response
+                            and response != self.last_sent
+                            and not self._similar_to_last_sent(response)):
                         _log("AI→BOT", f"pre-busy flush ({len(response)} chars)")
                         await _send_output(app, chat_id, response)
                         _log("BOT→USER", "delivered (pre-busy flush)")
