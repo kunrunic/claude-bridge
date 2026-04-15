@@ -1120,10 +1120,60 @@ async def _send_model_switch_prompt(app: Application, chat_id: int):
     await app.bot.send_message(
         chat_id,
         "⚠️ 자동 압축 실패 — 1M 컨텍스트에 Extra Usage 미활성입니다.\n"
-        "버튼을 누르면 `/model` 피커를 열고 현재 화면을 여기로 전달합니다. "
-        "원하는 모델 번호나 이름을 답장으로 보내면 그대로 입력됩니다.",
+        "버튼을 누르면 `/model` 피커를 열고 현재 화면을 여기로 전달합니다.",
         reply_markup=kb,
     )
+
+
+async def _render_model_picker(app: Application, chat_id: int, *, already_open: bool):
+    """현재 pane의 /model 피커를 캡쳐해 옵션 버튼과 함께 포워딩."""
+    pane = pane_output()
+    clean = strip_ansi(pane).strip()
+    lines = clean.splitlines()
+    start = max(0, len(lines) - 40)
+    for i in range(len(lines) - 1, start - 1, -1):
+        s = lines[i].strip()
+        if s and len(s) > 20 and all(c in "─" for c in s):
+            start = i + 1
+            break
+    picker_lines = lines[start:]
+    snippet = "\n".join(picker_lines).strip()
+    if len(snippet) > 1800:
+        snippet = snippet[-1800:]
+
+    options = _parse_model_options(picker_lines)
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    for opt in options:
+        label = f"{opt['num']}. {opt['name']}"
+        if opt['current']:
+            label += " ✔️"
+        kb_rows.append([InlineKeyboardButton(
+            label[:64], callback_data=f"pick_model:{opt['num']}"
+        )])
+    kb_rows.append([InlineKeyboardButton("✖ 취소 (Esc)", callback_data="pick_model:esc")])
+
+    header = "📋 /model 피커 (이미 열려있음):" if already_open else "📋 /model 피커:"
+    if options:
+        body = (
+            f"{header}\n```\n{snippet}\n```\n"
+            "버튼으로 선택하세요. (현재 모델에는 ✔️ 표시)"
+        )
+    else:
+        body = (
+            f"{header}\n```\n{snippet}\n```\n"
+            "버튼 파싱 실패 — 번호/이름을 답장으로 보내세요."
+        )
+    try:
+        await app.bot.send_message(
+            chat_id, body,
+            reply_markup=InlineKeyboardMarkup(kb_rows),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        await app.bot.send_message(
+            chat_id, body[:3900],
+            reply_markup=InlineKeyboardMarkup(kb_rows),
+        )
 
 # -- 핸들러 -------------------------------------------------------------------
 
@@ -1185,6 +1235,25 @@ async def cmd_esc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.set_reaction("⚡")
     except Exception:
         pass
+
+
+async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/model 피커 열기 또는 이미 열려있으면 현재 화면 포워딩."""
+    if not is_allowed(update):
+        await deny(update); return
+    if tmux_run(["has-session", "-t", TMUX]).returncode != 0:
+        await update.message.reply_text("세션이 없습니다.")
+        return
+    chat_id = update.effective_chat.id
+    clean = strip_ansi(pane_output()).strip()
+    already = _find_picker_cursor(clean.splitlines()) is not None
+    if not already:
+        send_input("/model")
+        _log("USER→AI", "/model dispatched")
+        await asyncio.sleep(0.8)
+    else:
+        _log("USER→AI", "/model (picker already open)")
+    await _render_model_picker(ctx.application, chat_id, already_open=already)
 
 
 async def cmd_unlock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1366,7 +1435,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 pass
 
     elif data == "open_model_picker":
-        # /compact 실패 → /model 피커를 열고 현재 옵션들을 버튼으로 포워딩
+        # /compact 실패 → /model 피커를 열고 옵션 버튼으로 포워딩
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -1377,58 +1446,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _log("MODEL-OPEN-FAIL", str(e))
             await q.answer("입력 실패", show_alert=True)
             return
-        # TUI 렌더 안정화 대기
-        await asyncio.sleep(0.8)
-        pane = pane_output()
-        clean = strip_ansi(pane).strip()
-        lines = clean.splitlines()
-        # 가장 아래에서 위로 divider 찾아 피커 박스만 추출
-        start = max(0, len(lines) - 40)
-        for i in range(len(lines) - 1, start - 1, -1):
-            s = lines[i].strip()
-            if s and len(s) > 20 and all(c in "─" for c in s):
-                start = i + 1
-                break
-        picker_lines = lines[start:]
-        snippet = "\n".join(picker_lines).strip()
-        if len(snippet) > 1800:
-            snippet = snippet[-1800:]
-
-        # 피커 옵션 동적 파싱: "  1. Default  Sonnet 4.6 · ..." / "❯ 4. sonnet ..."
-        options = _parse_model_options(picker_lines)
-        kb_rows: list[list[InlineKeyboardButton]] = []
-        for opt in options:
-            label = f"{opt['num']}. {opt['name']}"
-            if opt['current']:
-                label += " ✔️"
-            kb_rows.append([InlineKeyboardButton(
-                label[:64], callback_data=f"pick_model:{opt['num']}"
-            )])
-        kb_rows.append([InlineKeyboardButton("✖ 취소 (Esc)", callback_data="pick_model:esc")])
-
-        if options:
-            body = (
-                "📋 /model 피커:\n```\n"
-                f"{snippet}\n```\n"
-                "버튼으로 선택하세요. (현재 모델에는 ✔️ 표시)"
-            )
-        else:
-            body = (
-                "📋 /model 피커 화면:\n```\n"
-                f"{snippet}\n```\n"
-                "버튼 파싱 실패 — 번호/이름을 답장으로 보내세요."
-            )
-        try:
-            await ctx.bot.send_message(
-                q.message.chat_id, body,
-                reply_markup=InlineKeyboardMarkup(kb_rows),
-                parse_mode="Markdown",
-            )
-        except Exception:
-            await ctx.bot.send_message(
-                q.message.chat_id, body[:3900],
-                reply_markup=InlineKeyboardMarkup(kb_rows),
-            )
+        await asyncio.sleep(0.8)  # TUI 렌더 안정화
+        await _render_model_picker(ctx.application, q.message.chat_id, already_open=False)
 
     elif data.startswith("pick_model:"):
         choice = data.split(":", 1)[1]
@@ -1604,6 +1623,7 @@ async def post_init(app: Application):
         BotCommand("start",  "세션 목록 / 새 세션 시작"),
         BotCommand("end",    "현재 세션 종료"),
         BotCommand("esc",    "ESC 키 전송 (취소/중단)"),
+        BotCommand("model",  "모델 변경 피커 열기"),
         BotCommand("unlock", "세션 락 강제 해제"),
         BotCommand("whoami", "내 chat_id 확인 (관리자 등록용)"),
     ])
@@ -1627,6 +1647,7 @@ def _build_app() -> Application:
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("end",    cmd_end))
     app.add_handler(CommandHandler("esc",    cmd_esc))
+    app.add_handler(CommandHandler("model",  cmd_model))
     app.add_handler(CommandHandler("unlock", cmd_unlock))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(
