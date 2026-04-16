@@ -5,6 +5,16 @@ Telegram ↔ Claude(tmux) 중계의 중심. receiver 에서 호출하는 start/s
 
 sibling 모듈 호출은 `<module>.<name>` 형태로 접근해 테스트 패치 지점을
 단일 위치 (`bridge.<module>.<name>`) 로 고정한다.
+
+전달 모델
+--------
+content-hash dedup 을 제거하고 position-based `StreamQueue` 로 통일한다.
+    pane → 완료된 ⏺ 블록 추출 → queue.take_new 로 새 블록만 얻음
+         → 전송 성공 시 queue.advance(idx+sent)
+
+"전송 = 소비" 원칙. 동일 문자열이 우연히 다시 등장해도 재전송하지 않는다.
+idx 는 monitor 내부에서만 전진하며, 사용자가 새 turn 을 시작할 때
+`receiver.py` 측에서 `bridge.queue.reset()` 을 불러 0 으로 되돌린다.
 """
 from __future__ import annotations
 
@@ -22,12 +32,11 @@ from .config import (
     BUSY_STUCK_SEC,
     BUSY_TIMEOUT_SEC,
     CLAUDE,
-    DEDUP_TTL_SEC,
-    MAX_SENT_HISTORY,
     SETTLE_TICKS,
     STOP_WAIT_SEC,
     _log,
 )
+from .stream_queue import StreamQueue
 
 
 class Bridge:
@@ -36,20 +45,17 @@ class Bridge:
         self.running: bool = False
         self.task: asyncio.Task | None = None
         self.last_hash: str = ""
-        self.last_sent: str = ""
         self.awaiting_approval: bool = False
         self.skip_permissions: bool = False
         self.current_session_id: str | None = None
         self.last_approval_summary: str = ""
         self.last_approval_context: str = ""   # P2-1: 도구명 + 요약
         self.last_approval_full: str = ""      # P2-1: pane 전체 내용 (재연결 시 전달용)
-        # (응답 키, 전송 시각) — 중복 방지.
-        # TODO: 멀티 chat_id 전환 시 Bridge 인스턴스 분리 필요
-        self._sent_keys: list[tuple[str, float]] = []
-        # busy 세션 내 이미 스트리밍한 완료 블록 수 (position-based dedup)
-        self.busy_stream_idx: int = 0
-        self.limit_reported: bool = False      # 한도 초과 알림 중복 방지
-        self._state_lock = asyncio.Lock()      # P1-4: 상태 직렬화
+        self.queue: StreamQueue = StreamQueue()  # ⏺ 블록 position 커서
+        self.trust_ack_pending: bool = False     # 신뢰 프롬프트 auto-ack 상태
+        self.boot_notified: bool = False         # 부팅 후 사용자에게 최소 1번 이상 전달됐는지
+        self.limit_reported: bool = False        # 한도 초과 알림 중복 방지
+        self._state_lock = asyncio.Lock()        # P1-4: 상태 직렬화
 
     # -- 세션 관리 ---------------------------------------------------------
 
@@ -114,36 +120,50 @@ class Bridge:
             return "[권한 스킵 ON]  탭하면 OFF"
         return "[권한 확인 ON]  탭하면 스킵"
 
-    # -- dedup 헬퍼 --------------------------------------------------------
+    # -- flush 헬퍼 --------------------------------------------------------
 
-    def _response_key(self, text: str) -> str:
-        """중복 판정용 정규화 키 — 빈 줄/공백 무시한 정규화 문자열."""
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        return "\n".join(lines)
+    def _completed_blocks(self, clean: str, *, include_last: bool) -> list[str]:
+        """pane 에서 '완료된' ⏺ 블록만 추출.
 
-    def _prune_sent(self):
-        """DEDUP_TTL_SEC 이상 지난 항목 제거."""
-        cutoff = time.time() - DEDUP_TTL_SEC
-        self._sent_keys = [(k, t) for k, t in self._sent_keys if t >= cutoff]
+        include_last=False: 마지막 블록은 아직 성장 중일 수 있어 제외 (busy-stream).
+        _is_block_active 로 'Running…/Waiting…' 블록도 빠짐없이 걸러낸다.
+        """
+        blocks = parser.extract_response_blocks(clean)
+        if not blocks:
+            return []
+        candidates = blocks if include_last else blocks[:-1]
+        return [b for b in candidates if not parser._is_block_active(b)]
 
-    def _already_sent(self, text: str) -> bool:
-        """최근 DEDUP_TTL_SEC 내 전송 내역과 비교해 중복인지 확인."""
-        self._prune_sent()
-        key = self._response_key(text)
-        return any(k == key for k, _ in self._sent_keys)
-
-    def _mark_sent(self, text: str):
-        self._prune_sent()
-        self._sent_keys.append((self._response_key(text), time.time()))
-        if len(self._sent_keys) > MAX_SENT_HISTORY:
-            self._sent_keys.pop(0)
-
-    def _commit_sent(self, text: str):
-        """전송 확정 — last_sent 갱신과 dedup 기록을 원자적으로 묶는다.
-        scope: 현 Bridge 인스턴스 (chat_id 1:1 가정).
-        새 전송 경로 추가 시 반드시 이 헬퍼를 사용할 것."""
-        self.last_sent = text
-        self._mark_sent(text)
+    async def _flush_completed(
+        self,
+        app: Application,
+        chat_id: int,
+        clean: str,
+        *,
+        include_last: bool,
+        log_tag: str,
+    ) -> int:
+        """완료된 ⏺ 블록 중 아직 큐에서 소비되지 않은 것만 push.
+        리턴: 성공적으로 전송된 블록 수.
+        """
+        if self.awaiting_approval:
+            return 0
+        completed = self._completed_blocks(clean, include_last=include_last)
+        new_blocks = self.queue.take_new(completed)
+        sent = 0
+        for blk in new_blocks:
+            _log("AI→BOT", f"{log_tag} ({len(blk)} chars)")
+            try:
+                await sender._send_output(app, chat_id, blk)
+                _log("BOT→USER", f"delivered ({log_tag})")
+                sent += 1
+            except Exception as e:
+                _log("FLUSH-SEND-FAIL", f"{log_tag}: {e}")
+                break
+        if sent > 0:
+            self.queue.advance(self.queue.idx + sent)
+            self.boot_notified = True
+        return sent
 
     # -- 종료 --------------------------------------------------------------
 
@@ -169,8 +189,8 @@ class Bridge:
         reason: str,
     ) -> None:
         """busy 상태가 비정상적으로 오래 지속되거나 화면이 얼어붙었을 때 호출.
-        pane 에서 마지막 ⏺ 응답을 추출해 복구 전송하고, 없으면 재전송 안내.
-        어떤 경우든 busy state 를 강제로 리셋한다.
+        pane 에서 아직 소비되지 않은 완료 블록을 전부 복구 전송하고,
+        없으면 재전송 안내. 어떤 경우든 busy state 를 강제로 리셋한다.
         """
         _log("AI-WATCHDOG", f"trigger={reason}")
 
@@ -182,26 +202,19 @@ class Bridge:
             self.status_msg_id = None
             self._last_status_text = ""
 
-        response = parser.extract_last_response(clean)
-        has_new = (
-            response
-            and "⏺" in response
-            and response != self.last_sent
-            and not self._already_sent(response)
-        )
+        # peek: 보낼 게 있는지 먼저 확인하고 안내 메시지를 그에 맞춰 송출
+        completed = self._completed_blocks(clean, include_last=True)
+        has_new = bool(self.queue.take_new(completed))
 
         if has_new:
             try:
                 await app.bot.send_message(chat_id, f"⚠️ {reason} — 직전 응답 복구")
             except Exception:
                 pass
-            _log("AI→BOT", f"watchdog recovery ({len(response)} chars)")
-            try:
-                await sender._send_output(app, chat_id, response)
-                _log("BOT→USER", "delivered (watchdog)")
-            except Exception as e:
-                _log("WATCHDOG-SEND-FAIL", str(e))
-            self._commit_sent(response)
+            await self._flush_completed(
+                app, chat_id, clean,
+                include_last=True, log_tag="watchdog",
+            )
         else:
             try:
                 await app.bot.send_message(
@@ -223,7 +236,10 @@ class Bridge:
     async def monitor(self, app: Application, chat_id: int):
         self.chat_id = chat_id
         self.running = True
-        self.last_hash = self.last_sent = ""
+        self.last_hash = ""
+        self.queue.reset()
+        self.boot_notified = False
+        self.trust_ack_pending = False
         self.dead_reported = False
         self.was_busy = False
         self.status_msg_id: int | None = None
@@ -236,21 +252,20 @@ class Bridge:
         self.auto_compacting: bool = False       # Context limit 자동 /compact 진행 중
         self.compact_error_halted: bool = False  # /compact 실패 감지 → 재시도 중단
         self.busy_last_stream_at: float | None = None  # bypass 모드 중 ⏺ 스트리밍 throttle
-        self.busy_stream_idx: int = 0                   # busy 세션 내 이미 스트리밍한 완료 블록 수
         settle = 0
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
 
-        # 부팅 시점에 pane 에 이미 있던 ⏺ 응답은 "이미 사용자가 본 것" 으로 간주.
-        # last_sent/_sent_keys 에는 기록하지 않고 last_hash 만 고정 — 이렇게 하면
-        # pane 내용이 변하지 않는 한 settle 파이프라인에 진입하지 않아 재전송되지 않고,
-        # 이후 Claude 가 우연히 seed 와 동일한 문자열로 응답해도 dedup 에 걸리지 않는다.
+        # 부팅 시점에 pane 에 이미 있던 ⏺ 블록은 "이미 사용자가 본 것" 으로 간주.
+        # queue.seed 로 해당 개수만큼 앞으로 돌려 take_new 가 재전송하지 않게 하고,
+        # last_hash 도 고정해 settle 파이프라인이 즉시 발동하지 않게 한다.
         try:
             seed_clean = parser.strip_ansi(await tmux.pane_output_async()).strip()
-            seed_resp = parser.extract_last_response(seed_clean)
-            if seed_resp:
+            seed_blocks = parser.extract_response_blocks(seed_clean)
+            if seed_blocks:
+                self.queue.seed(len(seed_blocks))
                 self.last_hash = hashlib.md5(seed_clean.encode()).hexdigest()
-                _log("BOOT-SEED", f"마지막 ⏺ 블록 {len(seed_resp)}자 감지 — pane hash 고정")
+                _log("BOOT-SEED", f"⏺ 블록 {len(seed_blocks)}개 consumed — queue.idx={self.queue.idx}")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -284,14 +299,17 @@ class Bridge:
                     clean = parser.strip_ansi(out).strip()
 
                     # 승인/신뢰 프롬프트는 busy 보다 우선 체크
-                    if parser.is_trust_prompt(clean):
-                        if not self.last_sent.endswith("__trust_ack__"):
+                    is_trust = parser.is_trust_prompt(clean)
+                    if is_trust:
+                        if not self.trust_ack_pending:
                             tmux.send_key("Enter")
                             _log("AUTO-ACK", "trust prompt")
                             await app.bot.send_message(chat_id, "폴더 신뢰 프롬프트 자동 승인")
-                            self.last_sent = clean + "__trust_ack__"
+                            self.trust_ack_pending = True
                         await asyncio.sleep(1)
                         continue
+                    elif self.trust_ack_pending:
+                        self.trust_ack_pending = False
 
                     # 사용량 한도 초과 감지
                     if parser.LIMIT_RE.search(clean):
@@ -364,15 +382,11 @@ class Bridge:
                         _log("AI-CTX-LIMIT", "auto-compact resolved")
 
                     if parser.is_approval(clean) and not self.awaiting_approval:
-                        # Fix 2: 승인창 위 새 ⏺ 응답이 있으면 먼저 전송
-                        response = parser.extract_last_response(clean)
-                        if (response and "⏺" in response
-                                and response != self.last_sent
-                                and not self._already_sent(response)):
-                            _log("AI→BOT", f"pre-approval flush ({len(response)} chars)")
-                            await sender._send_output(app, chat_id, response)
-                            _log("BOT→USER", "delivered (pre-approval flush)")
-                            self._commit_sent(response)
+                        # Fix 2: 승인창 위 새 ⏺ 응답이 있으면 먼저 flush
+                        await self._flush_completed(
+                            app, chat_id, clean,
+                            include_last=True, log_tag="pre-approval",
+                        )
 
                         # P2-1: 승인 컨텍스트 저장
                         self.last_approval_summary = parser.summarize_approval(clean)
@@ -399,14 +413,10 @@ class Bridge:
 
                     # Fix 1: busy 진입 엣지에서 직전 ⏺ 응답 flush
                     if busy_now and not self.was_busy:
-                        response = parser.extract_last_response(clean)
-                        if (response and "⏺" in response
-                                and response != self.last_sent
-                                and not self._already_sent(response)):
-                            _log("AI→BOT", f"pre-busy flush ({len(response)} chars)")
-                            await sender._send_output(app, chat_id, response)
-                            _log("BOT→USER", "delivered (pre-busy flush)")
-                            self._commit_sent(response)
+                        await self._flush_completed(
+                            app, chat_id, clean,
+                            include_last=True, log_tag="pre-busy",
+                        )
 
                     # busy 진입
                     if busy_now and not self.was_busy:
@@ -419,9 +429,8 @@ class Bridge:
                         # 잔존 스크롤백의 Crunched/Compacting 마커로 오탐하지 않도록
                         # busy 진입 시점의 상태를 snapshot — 이후 "새로 등장한 경우" 에만 감지
                         self._pre_busy_had_compact = parser.has_compaction(clean)
-                        # busy 스트리밍 타이머/인덱스 초기화 — 진입 직후 1회는 즉시 가능
+                        # busy 스트리밍 타이머 초기화 — 진입 직후 1회는 즉시 가능
                         self.busy_last_stream_at = None
-                        self.busy_stream_idx = 0
                         label, cc_sec = parser.busy_status(clean)
                         self.last_status_label = label
                         _log("AI-BUSY", label)
@@ -471,35 +480,19 @@ class Bridge:
                             await asyncio.sleep(1)
                             continue
 
-                        # busy 중 ⏺ 블록 주기적 스트리밍 (bypass 모드 장시간 busy 대응)
-                        # "완료된" 블록(=뒤에 다음 ⏺ 이 나타나 더 이상 성장하지 않는 블록) 만
-                        # 전송. 마지막 블록은 아직 성장 중이므로 skip → busy 종료 시 SETTLE 에서 처리.
+                        # busy 중 ⏺ 블록 주기적 스트리밍 (bypass 모드 장시간 busy 대응).
+                        # 마지막 블록은 아직 성장 중이므로 제외(include_last=False).
+                        # queue.idx 로 이미 보낸 블록은 자동 제외된다.
                         should_stream = (
                             self.busy_last_stream_at is None
                             or now_ts - self.busy_last_stream_at >= BUSY_STREAM_SEC
                         )
-                        if should_stream and not self.awaiting_approval:
+                        if should_stream:
                             self.busy_last_stream_at = now_ts
-                            blocks = parser.extract_response_blocks(clean)
-                            # 마지막 블록 제외 (성장 중) + 실행 중 도구 블록 제외
-                            completed = [b for b in blocks[:-1] if not parser._is_block_active(b)]
-                            # position-based: busy 세션 내 이미 전송한 완료 블록 개수를 넘어선 것만 송신.
-                            # content 가 바뀌어도(진행 카운터, todo 체크 등) 같은 인덱스면 재전송 안 함.
-                            new_blocks = completed[self.busy_stream_idx:]
-                            for blk in new_blocks:
-                                # 방어선: 스크롤백 밀림/재정렬 대비 content-hash 1회 더 체크
-                                if self._already_sent(blk):
-                                    continue
-                                _log("AI→BOT", f"stream block ({len(blk)} chars)")
-                                try:
-                                    await sender._send_output(app, chat_id, blk)
-                                    _log("BOT→USER", "delivered (busy-stream)")
-                                    self._commit_sent(blk)
-                                except Exception as e:
-                                    _log("BUSY-STREAM-FAIL", str(e))
-                                    break
-                            # idx 는 단조증가 — 스크롤백으로 completed 길이가 줄어도 retreat 금지
-                            self.busy_stream_idx = max(self.busy_stream_idx, len(completed))
+                            await self._flush_completed(
+                                app, chat_id, clean,
+                                include_last=False, log_tag="busy-stream",
+                            )
 
                         if self.status_msg_id and self.busy_started_at:
                             elapsed = int(now_ts - self.busy_started_at)
@@ -530,13 +523,8 @@ class Bridge:
 
                     # P1: 압축을 거쳐 빠져나온 경우 — 응답 복구 or 재전송 안내
                     if self.was_busy and self.saw_compaction:
-                        response = parser.extract_last_response(clean)
-                        has_new = (
-                            response
-                            and "⏺" in response
-                            and response != self.last_sent
-                            and not self._already_sent(response)
-                        )
+                        completed = self._completed_blocks(clean, include_last=True)
+                        has_new = bool(self.queue.take_new(completed))
                         if has_new:
                             try:
                                 await app.bot.send_message(
@@ -544,13 +532,10 @@ class Bridge:
                                 )
                             except Exception:
                                 pass
-                            _log("AI→BOT", f"post-compact ({len(response)} chars)")
-                            try:
-                                await sender._send_output(app, chat_id, response)
-                                _log("BOT→USER", "delivered (post-compact)")
-                            except Exception as e:
-                                _log("POST-COMPACT-SEND-FAIL", str(e))
-                            self._commit_sent(response)
+                            await self._flush_completed(
+                                app, chat_id, clean,
+                                include_last=True, log_tag="post-compact",
+                            )
                         else:
                             # auto_compacting 상태면 이미 /compact dispatch 시점에 안내했으므로 중복 생략
                             if not self.auto_compacting:
@@ -581,26 +566,25 @@ class Bridge:
                     else:
                         settle += 1
 
-                    if pending and settle >= SETTLE_TICKS and pending != self.last_sent:
-                        response = parser.extract_last_response(pending)
-                        is_first = not self.last_sent
-
-                        to_send = None
-                        if response and "⏺" in response:
-                            if response != self.last_sent and not self._already_sent(response):
-                                to_send = response
-                        elif is_first:
-                            to_send = "\n".join(pending.splitlines()[-30:]).strip()
-
-                        if to_send and not self.awaiting_approval:
-                            _log("AI→BOT", f"response ({len(to_send)} chars)")
-                            await sender._send_output(app, chat_id, to_send)
-                            _log("BOT→USER", "delivered")
-                            self._commit_sent(to_send)
-                        else:
-                            if response and "⏺" in response and self._already_sent(response):
-                                _log("AI-DROP-DUP", f"dedup suppressed ({len(response)} chars)")
-                            self.last_sent = response or pending
+                    if pending and settle >= SETTLE_TICKS:
+                        sent_count = await self._flush_completed(
+                            app, chat_id, pending,
+                            include_last=True, log_tag="response",
+                        )
+                        # 부팅 직후 ⏺ 블록이 전혀 없는 상태라면 (Welcome/ready 메시지)
+                        # pane tail 을 first-boot fallback 으로 송출한다.
+                        if not self.boot_notified and sent_count == 0:
+                            blocks = parser.extract_response_blocks(pending)
+                            if not blocks and not self.awaiting_approval:
+                                fallback = "\n".join(pending.splitlines()[-30:]).strip()
+                                if fallback:
+                                    _log("AI→BOT", f"first boot ({len(fallback)} chars)")
+                                    try:
+                                        await sender._send_output(app, chat_id, fallback)
+                                        _log("BOT→USER", "delivered (first-boot)")
+                                        self.boot_notified = True
+                                    except Exception as e:
+                                        _log("FIRST-BOOT-SEND-FAIL", str(e))
                         pending = ""
                         self.was_busy = False
 

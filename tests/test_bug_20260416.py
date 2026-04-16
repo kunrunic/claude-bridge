@@ -1,19 +1,21 @@
 """
-20260416_074147 버그 회귀 방지 테스트.
+20260416_074147 회귀 방지 테스트 (재설계본).
 
-현상: 01:31 재부팅 시 BOOT-SEED 가 직전 ⏺ 블록("안녕하세요! 무엇을 도와드릴까요?")을
-last_sent + _sent_keys 양쪽에 등록 → 07:33 사용자가 "안녕?" 보냈을 때 Claude 가
-동일 문자열로 응답했으나 dedup 에 걸려 silent drop.
+구 설계: content-hash dedup (_sent_keys, TTL, LRU) 로 BOOT-SEED 블록이
+다시 전송되지 않게 막았지만, 같은 문자열이 새 turn 에 우연히 나오면
+silent drop 되는 버그가 있었다.
 
-수정:
-- BOOT-SEED 는 last_sent/_sent_keys 를 건드리지 않고 last_hash 만 고정 (settle 진입 방지).
-- _already_sent/_mark_sent 는 DEDUP_TTL_SEC 기반 TTL 적용.
-- _commit_sent 헬퍼로 last_sent + _mark_sent 원자화.
+신 설계: position-based `StreamQueue` — pane 의 ⏺ 블록 인덱스만 추적.
+- "전송 = 소비" → content 같아도 새 position 이면 새 블록.
+- BOOT-SEED 시 queue.seed(N) 으로 기존 블록 N 개를 '소비됨' 으로 표시.
+- 새 user turn 에서 queue.reset() → idx=0.
+
+이 파일은 StreamQueue 동작과 BOOT-SEED 재전송 방지 회귀, 그리고
+_is_block_active (busy-stream 이 의존하는 활성 블록 감지) 를 지킨다.
 """
 from __future__ import annotations
 
 import sys
-import time
 import types
 from pathlib import Path
 
@@ -64,92 +66,118 @@ bot = _load_bot()
 GREETING = "⏺ 안녕하세요! 무엇을 도와드릴까요?"
 
 
-# ---------- _commit_sent 원자성 ----------
+# ---------- StreamQueue 기본 동작 ----------
 
-def test_commit_sent_updates_both_state():
-    b = bot.Bridge()
-    b._commit_sent(GREETING)
-    assert b.last_sent == GREETING
-    assert b._already_sent(GREETING)
-
-
-# ---------- TTL ----------
-
-def test_dedup_ttl_expires():
-    """DEDUP_TTL_SEC 이후엔 같은 문자열이 새 응답으로 취급된다."""
-    b = bot.Bridge()
-    b._mark_sent(GREETING)
-    assert b._already_sent(GREETING)
-
-    # 엔트리 타임스탬프를 TTL 경계 바깥으로 강제 이동
-    b._sent_keys = [(k, t - bot.DEDUP_TTL_SEC - 1) for k, t in b._sent_keys]
-    assert not b._already_sent(GREETING)
+def test_queue_starts_empty():
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    assert q.idx == 0
+    assert q.take_new(["⏺ A", "⏺ B"]) == ["⏺ A", "⏺ B"]
 
 
-def test_dedup_lru_capacity_large_enough_for_burst():
-    """MAX_SENT_HISTORY 가 TTL 창 내 폭주에도 eviction 안 일어날 만큼 커야 한다.
-    기존 20개 상한으로는 2분 안에 151개 블록 생성되는 상황에서 무한 루프 발생."""
-    assert bot.MAX_SENT_HISTORY >= 500
+def test_queue_take_new_is_non_destructive():
+    """take_new 는 idx 를 움직이지 않는다 — 호출자가 advance 로 명시적으로 전진."""
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    completed = ["⏺ A", "⏺ B"]
+    assert q.take_new(completed) == completed
+    assert q.take_new(completed) == completed  # 여전히 동일
+    assert q.idx == 0
 
 
-def test_dedup_within_ttl_still_blocks():
-    b = bot.Bridge()
-    b._mark_sent(GREETING)
-    assert b._already_sent(GREETING)
-    # 공백만 다른 동일 본문도 여전히 잡혀야 함 (기존 회귀 보호)
-    assert b._already_sent("\n\n" + GREETING + "   \n")
+def test_queue_advance_marks_consumed():
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    completed = ["⏺ A", "⏺ B"]
+    q.advance(len(completed))
+    assert q.take_new(completed) == []
 
 
-# ---------- BOOT-SEED 회귀: 이번 버그 본체 ----------
+def test_queue_advance_is_monotonic():
+    """스크롤백으로 completed 길이가 줄어도 idx 는 retreat 금지."""
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    q.advance(5)
+    q.advance(3)   # 후퇴 시도
+    assert q.idx == 5
 
-def test_boot_seed_does_not_poison_dedup():
+
+def test_queue_seed_treats_existing_as_consumed():
+    """BOOT-SEED: pane 에 이미 있던 블록은 소비된 것으로 간주."""
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    q.seed(3)
+    assert q.take_new(["⏺ A", "⏺ B", "⏺ C"]) == []
+    # 네 번째가 새로 붙으면 그것만 new
+    assert q.take_new(["⏺ A", "⏺ B", "⏺ C", "⏺ D"]) == ["⏺ D"]
+
+
+def test_queue_reset_returns_to_zero():
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    q.advance(10)
+    q.reset()
+    assert q.idx == 0
+
+
+def test_queue_position_not_content():
+    """position-based: content 가 바뀌어도 같은 idx 면 소비된 것.
+
+    busy-stream 에서 진행 카운터(todo 체크, N/total 진행도 등)만 바뀌는 블록이
+    재전송되지 않음을 보장.
     """
-    재부팅 시나리오 재현:
-    1. pane 에 ⏺ seed 블록이 있는 상태에서 monitor() 가 부팅됨.
-    2. 이후 사용자 입력에 Claude 가 우연히 동일 문자열로 응답.
-    3. 해당 응답은 dedup 에 걸리지 않고 정상 전송돼야 함.
+    from bridge.stream_queue import StreamQueue
+    q = StreamQueue()
+    completed_t1 = ["⏺ A", "⏺ B (progress 5)"]
+    new = q.take_new(completed_t1)
+    q.advance(len(completed_t1))
+    assert len(new) == 2
 
-    monitor() 본체는 async 이므로 핵심 로직만 모사: BOOT-SEED 가 했던
-    일(= last_hash 고정, last_sent 미세팅, _sent_keys 미등록)을 직접 재현한 뒤
-    settle 경로의 조건식을 그대로 평가한다.
+    completed_t2 = ["⏺ A", "⏺ B (progress 7)"]  # B 의 content 바뀜
+    assert q.take_new(completed_t2) == []  # position 이 같으니 skip
+
+
+# ---------- BOOT-SEED 재전송 방지 회귀 ----------
+
+def test_boot_seed_does_not_poison_new_turn():
     """
+    재부팅 시나리오:
+    1. pane 에 ⏺ greeting 이 있는 상태에서 monitor() 가 부팅됨.
+       → queue.seed(1) 으로 idx=1.
+    2. 이후 사용자가 "안녕?" 보냄 → queue.reset() 으로 idx=0.
+    3. Claude 가 우연히 동일 문자열로 응답 → 새 block 으로 인식, 전송됨.
+
+    구 설계는 content-hash dedup 에 막혀 silent drop 됐음.
+    """
+    b = bot.Bridge()
+    # BOOT-SEED 시뮬레이션
+    b.queue.seed(1)
+    assert b.queue.idx == 1
+
+    # 사용자가 새 turn 시작
+    b.queue.reset()
+    assert b.queue.idx == 0
+
+    # Claude 가 응답 — queue 는 새 block 으로 인식
+    new_turn_blocks = [GREETING]
+    assert b.queue.take_new(new_turn_blocks) == [GREETING]
+
+
+def test_boot_seed_prevents_settle_resend():
+    """BOOT-SEED 직후 pane 이 그대로면 settle 이 작동하지 않아야 한다."""
     import hashlib
 
     b = bot.Bridge()
+    seed_pane = f"foo\n{GREETING}"
+    b.last_hash = hashlib.md5(seed_pane.encode()).hexdigest()
+    b.queue.seed(1)  # ⏺ greeting 1개 consumed
 
-    # --- BOOT-SEED 시뮬레이션 (수정 후 동작) ---
-    seed_pane_clean = f"some older output\n\n{GREETING}"
-    b.last_hash = hashlib.md5(seed_pane_clean.encode()).hexdigest()
-    # 핵심: last_sent 와 _sent_keys 는 건드리지 않음
-    assert b.last_sent == ""
-    assert not b._already_sent(GREETING)
+    # 다음 tick: 같은 pane
+    h = hashlib.md5(seed_pane.encode()).hexdigest()
+    assert h == b.last_hash   # settle 파이프라인 미진입
 
-    # --- 07:33: 사용자가 "안녕?" 보냄 → Claude 가 동일 문자열로 응답 ---
-    new_response = GREETING
-    # settle 경로 1050행 조건
-    should_send = (
-        "⏺" in new_response
-        and new_response != b.last_sent
-        and not b._already_sent(new_response)
-    )
-    assert should_send, "BOOT-SEED 가 dedup 을 오염시키면 이 assert 가 실패 — 이번 버그의 본체"
-
-
-def test_boot_seed_does_not_trigger_settle_resend():
-    """
-    BOOT-SEED 직후 pane 내용이 그대로면 last_hash 가 같아 settle 파이프라인에
-    진입하지 않아야 한다. 이는 "seed 블록 재전송 방지" 기능이 유지됨을 검증.
-    """
-    import hashlib
-
-    b = bot.Bridge()
-    seed_pane_clean = f"foo\n{GREETING}"
-    b.last_hash = hashlib.md5(seed_pane_clean.encode()).hexdigest()
-
-    # 이후 tick: 같은 pane 이 들어왔을 때 hash 비교
-    h = hashlib.md5(seed_pane_clean.encode()).hexdigest()
-    # monitor 의 1037행 조건: h != last_hash → False. pending 미설정.
-    assert h == b.last_hash
+    # 설령 진입해도 queue 가 막아준다
+    assert b.queue.take_new([GREETING]) == []
 
 
 # ---------- _is_block_active: 실행 중 도구 블록 감지 ----------
@@ -184,73 +212,13 @@ def test_text_response_not_active():
     assert not bot._is_block_active(GREETING)
 
 
-# ---------- position-based busy-stream ----------
+# ---------- Bridge 에 StreamQueue 가 붙어있는지 ----------
 
-def test_busy_stream_idx_initializes_to_zero():
+def test_bridge_has_stream_queue():
+    from bridge.stream_queue import StreamQueue
     b = bot.Bridge()
-    assert b.busy_stream_idx == 0
-
-
-def test_busy_stream_position_prevents_resend_on_content_change():
-    """
-    busy-stream 핵심: 완료된 블록의 content 가 바뀌어도(진행 카운터, todo
-    체크 상태 등) 같은 position 이면 재전송하지 않는다.
-
-    시나리오:
-    - Tick 1: [A, B(progress: 5), C(last, growing)] → A, B 전송, idx=2
-    - Tick 2: [A, B(progress: 7 — 카운터 갱신), C(last, growing)] → 둘 다 idx<2 이므로 skip
-    """
-    b = bot.Bridge()
-
-    completed_t1 = [
-        "⏺ Block A — 완료",
-        "⏺ Block B — 진행 카운터 (md=100)",
-    ]
-    completed_t2 = [
-        "⏺ Block A — 완료",
-        "⏺ Block B — 진행 카운터 (md=200)",   # 카운터만 바뀜
-    ]
-
-    # Tick 1: 전부 새 블록
-    new_t1 = completed_t1[b.busy_stream_idx:]
-    assert new_t1 == completed_t1
-    b.busy_stream_idx = max(b.busy_stream_idx, len(completed_t1))
-    assert b.busy_stream_idx == 2
-
-    # Tick 2: content 바뀌었지만 position 은 동일 → 빈 리스트
-    new_t2 = completed_t2[b.busy_stream_idx:]
-    assert new_t2 == []
-
-
-def test_busy_stream_idx_monotonic_under_scrollback():
-    """스크롤백으로 앞 블록이 잘려나가 completed 길이가 줄어도 idx 는 retreat 하지 않는다."""
-    b = bot.Bridge()
-    b.busy_stream_idx = max(b.busy_stream_idx, 5)
-    # 다음 tick 에 completed 가 3개로 줄어든 경우
-    b.busy_stream_idx = max(b.busy_stream_idx, 3)
-    assert b.busy_stream_idx == 5
-
-
-def test_busy_stream_sends_only_new_completed_blocks():
-    """완료 블록이 추가되면 그 부분만 전송 대상."""
-    b = bot.Bridge()
-    completed_t1 = ["⏺ A", "⏺ B"]
-    b.busy_stream_idx = len(completed_t1)
-
-    completed_t2 = ["⏺ A", "⏺ B", "⏺ C", "⏺ D"]
-    new = completed_t2[b.busy_stream_idx:]
-    assert new == ["⏺ C", "⏺ D"]
-
-
-# ---------- AI-DROP-DUP 로그 경로 ----------
-
-def test_already_sent_check_is_the_drop_trigger():
-    """settle else 분기에서 AI-DROP-DUP 로그가 나올 조건(= _already_sent=True)
-    을 수동으로 만들어 봤을 때 실제로 True 가 되는지 확인."""
-    b = bot.Bridge()
-    b._commit_sent(GREETING)
-    b.last_sent = ""  # last_sent 동등성만 뚫려도 dedup 이 2차 방어로 남는지
-    assert b._already_sent(GREETING)
+    assert isinstance(b.queue, StreamQueue)
+    assert b.queue.idx == 0
 
 
 if __name__ == "__main__":

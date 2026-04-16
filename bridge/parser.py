@@ -215,12 +215,21 @@ def extract_response_blocks(text: str) -> list[str]:
     """
     lines, end = _response_region(text)
 
-    # 마지막 ❯ 사용자 입력 이후부터 end 사이에서 ⏺ 시작 위치 수집
+    # 마지막 ❯ 사용자 입력 이후부터 end 사이에서 ⏺ 시작 위치 수집.
+    # 내용이 비어있는 ❯ (입력 박스) 는 user prompt 로 간주하지 않는다 —
+    # 실제 panel 은 대개 divider 로 input box 를 구분하지만, divider 가 없는
+    # 경우에도 "❯ 만 있고 뒤에 텍스트가 없는" 줄은 제출된 입력이 아니라 대기 중인
+    # 입력 박스이므로 스킵하고 그 위의 '제출된 ❯' 를 찾는다.
     user_prompt_idx = -1
     for i in range(end - 1, -1, -1):
-        if lines[i].lstrip().startswith("❯ "):
-            user_prompt_idx = i
-            break
+        s = lines[i].lstrip()
+        if not s.startswith("❯"):
+            continue
+        rest = s[1:].strip()
+        if not rest:
+            continue   # 빈 입력 박스 — 스킵
+        user_prompt_idx = i
+        break
     scan_start = user_prompt_idx + 1
 
     starts = [

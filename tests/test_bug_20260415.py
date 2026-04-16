@@ -1,7 +1,8 @@
 """
 20260415_150241 버그 회귀 방지 테스트.
 
-- A: 부팅 시점 stale ⏺ 가 다시 전송되지 않도록 monitor() 가 _sent_keys 시드.
+- A: 부팅 시점 stale ⏺ 가 다시 전송되지 않도록 monitor() 가 pane 을 시드.
+     (현재는 StreamQueue.seed 로 구현 — test_bug_20260416 참조.)
 - B: _approval_box() 가 '봇방 설명' 같은 위쪽 ⏺ 본문을 승인 카드에 끌어오지 않음.
 
 bot.py 는 telegram 패키지에 의존하므로 import 를 stub 처리한 뒤 로드한다.
@@ -108,14 +109,3 @@ def test_extract_last_response_picks_last_block():
     last = bot.extract_last_response(pane)
     assert last.startswith("⏺")
     assert "Reading 1 file" in last
-
-
-def test_mark_sent_dedup_via_response_key():
-    """부팅 시드 후 같은 응답이 다시 들어와도 _already_sent 가 True."""
-    b = bot.Bridge()
-    seed = bot.extract_last_response(APPROVAL_PANE)
-    assert seed
-    b._mark_sent(seed)
-    # 공백/줄바꿈만 다른 동일 본문도 중복으로 잡혀야 함
-    noisy = "\n\n" + seed + "   \n"
-    assert b._already_sent(noisy)

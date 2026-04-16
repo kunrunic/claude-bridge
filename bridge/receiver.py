@@ -174,6 +174,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # 프롬프트 만료, 세션 살아있음 → Claude 에 재요청
             bridge.awaiting_approval = False
             _log("USER-ACK", f"late approved (prompt expired) — context={context}")
+            bridge.queue.reset()
             tmux.send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
             try:
                 await q.edit_message_text(
@@ -194,6 +195,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     bridge.monitor(ctx.application, q.message.chat_id)
                 )
                 await asyncio.sleep(3)
+                bridge.queue.reset()
                 tmux.send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
                 try:
                     await q.edit_message_text(
@@ -232,6 +234,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # 프롬프트 만료, 세션 살아있음 → Claude 에 취소 요청
             bridge.awaiting_approval = False
             _log("USER-ACK", f"late denied (prompt expired) — context={context}")
+            bridge.queue.reset()
             tmux.send_input(f"사용자가 '{context}' 작업을 거부했습니다. 해당 작업을 취소하고 대기해주세요.")
             try:
                 await q.edit_message_text(
@@ -443,6 +446,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             payload = f"[텔레그램 이미지 첨부: {fpath}]"
             if caption:
                 payload += f"\n{caption}"
+            # 새 turn 시작 — 이전 turn 에서 소비된 ⏺ 커서를 초기화
+            bridge.queue.reset()
             tmux.send_input(payload)
             _log("BOT→AI", "forwarded image + caption")
             try:
@@ -458,6 +463,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     preview = caption[:60].replace("\n", " ")
     _log("USER→BOT", preview)
+    # 새 turn 시작 — 이전 turn 에서 소비된 ⏺ 커서를 초기화
+    bridge.queue.reset()
     tmux.send_input(caption)
     _log("BOT→AI", "forwarded to Claude (waiting for response)")
     try:
