@@ -7,7 +7,7 @@
 #   ./bin/capture.sh -n 1000             줄 수 지정
 #   ./bin/capture.sh --raw               ANSI 색상 코드 포함 (터미널 컬러 유지)
 #   ./bin/capture.sh --save              capture/YYYYMMDD_HHMMSS.txt 에 저장 후 경로 출력
-#   ./bin/capture.sh -f | --follow       tmux attach -r (read-only) — 실시간 관찰, Ctrl+B d 로 detach
+#   ./bin/capture.sh -f | --follow       tmux attach -r (read-only) — 실시간 관찰, Ctrl+b (소문자) 뗀 뒤 d 로 detach
 #
 # --follow 는 read-only 모드라 키 입력이 bridge 에 전달되지 않아 안전.
 set -e
@@ -40,7 +40,8 @@ claude-bridge tmux 패널 캡처 도구
   ./bin/capture.sh --raw           ANSI 색상 코드 포함
   ./bin/capture.sh --save          capture/YYYYMMDD_HHMMSS.txt 에 저장하고 경로만 출력
   ./bin/capture.sh -f / --follow   tmux attach -r (read-only) — 실시간 관찰
-                                   (Ctrl+B d 로 detach, 키 입력은 bridge 에 전달 안 됨)
+                                   (detach: Ctrl+b (소문자, Shift 없음) 를 눌렀다 뗀 뒤 d 한 글자)
+                                   (키 입력은 bridge 에 전달되지 않음)
 USAGE
             exit 0
             ;;
@@ -67,7 +68,10 @@ fi
 # ── --follow: read-only attach ───────────────────────────────
 if [ "$FOLLOW" = "1" ]; then
     echo "=> tmux attach -t $TMUX_NAME -r (read-only)"
-    echo "   Ctrl+B d  로 detach 하세요. 키 입력은 bridge 에 전달되지 않습니다."
+    echo "   detach: Ctrl+b 뗀 뒤 d"
+    echo "     (Ctrl+b 는 소문자 b / Shift 없음. 누르면 상태줄에 [read-only] 가"
+    echo "      뜨며 prefix 활성 상태. 그 상태에서 d 를 누르면 빠져나옵니다.)"
+    echo "     (키 입력은 bridge 에 전달되지 않습니다.)"
     echo
     exec $TMUX_BIN attach -t "$TMUX_NAME" -r
 fi

@@ -54,7 +54,10 @@ SSH 접속 후 bridge 가 지금 뭘 하고 있는지 빠르게 확인하는 도
 ./bin/capture.sh -n 1000         # 줄 수 지정
 ./bin/capture.sh --raw           # ANSI 색상 코드 포함
 ./bin/capture.sh --save          # capture/YYYYMMDD_HHMMSS.txt 저장, 경로 출력
-./bin/capture.sh --follow        # tmux attach -r (read-only) — 실시간 관찰, Ctrl+B d 로 detach
+./bin/capture.sh --follow        # tmux attach -r (read-only) — 실시간 관찰
+                                 # detach: Ctrl+b 뗀 뒤 d
+                                 #   (Ctrl+b 는 소문자 b, Shift 없음 — 누르면 상태줄에
+                                 #    [read-only] 가 뜨며 prefix 가 먹힌 것. 그 상태에서 d)
 ```
 
 `--follow` 는 read-only attach 라 키 입력이 봇 쪽으로 전달되지 않아 안전합니다.
