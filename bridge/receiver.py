@@ -15,7 +15,7 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from . import config, parser, sender, session, tmux
+from . import config, dump, parser, sender, session, tmux
 from .config import _log
 from .core import bridge
 
@@ -139,6 +139,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+    dump.event("receiver", "callback", data=data, chat_id=q.message.chat_id if q.message else None)
 
     if data == "reattach":
         await q.edit_message_text("기존 세션 재연결 중…")
@@ -433,6 +434,12 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = update.message
     caption = (msg.caption or msg.text or "").strip()
+    dump.event(
+        "receiver", "on_message",
+        has_photo=bool(msg.photo),
+        caption=caption[:300],
+        length=len(caption),
+    )
 
     if msg.photo:
         photo = msg.photo[-1]

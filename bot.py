@@ -31,7 +31,7 @@ from telegram.request import HTTPXRequest
 
 # 하위 모듈 자체를 bot 네임스페이스에도 노출 — 테스트가 `bot.tmux.send_key` 등
 # 정의 위치 기준으로 patch 할 수 있도록.
-from bridge import config, core, parser, receiver, sender, session, tmux
+from bridge import config, core, dump, parser, receiver, sender, session, tmux
 
 from bridge.config import (
     ALLOWED_IDS,
@@ -162,6 +162,10 @@ def _build_app() -> Application:
 
 
 def main():
+    # dump 초기화 (CB_DUMP env 가 있을 때만 실제 기록, 아니면 no-op)
+    instance = sys.argv[1] if len(sys.argv) > 1 else "default"
+    dump.init(instance)
+
     # P1-2: Telegram 폴링 재연결 루프 (exponential backoff)
     backoff = 1
     retries = 0

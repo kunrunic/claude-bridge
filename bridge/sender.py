@@ -13,7 +13,7 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
 
-from . import parser, tmux
+from . import dump, parser, tmux
 from .config import MAX_MSG_CHARS, _log
 
 
@@ -45,6 +45,7 @@ async def _send_output(app: Application, chat_id: int, text: str):
     import html as _html
     chunks = _chunk_text(text)
     total = len(chunks)
+    dump.event("sender", "send_output", length=len(text), chunks=total, preview=text[:300])
     for i, chunk in enumerate(chunks, 1):
         header = f"[{i}/{total}]\n" if total > 1 else ""
         body = f"{header}<pre>{_html.escape(chunk)}</pre>"
@@ -52,14 +53,17 @@ async def _send_output(app: Application, chat_id: int, text: str):
             await app.bot.send_message(chat_id, body, parse_mode="HTML")
         except Exception as e:
             _log("SEND-HTML-FAIL", str(e))
+            dump.event("sender", "send_html_fail", error=str(e)[:200])
             try:
                 await app.bot.send_message(chat_id, header + chunk)
             except Exception as e2:
                 _log("SEND-PLAIN-FAIL", str(e2))
+                dump.event("sender", "send_plain_fail", error=str(e2)[:200])
         await asyncio.sleep(0.2)
 
 
 async def _send_approval(app: Application, chat_id: int, text: str):
+    dump.event("sender", "send_approval", preview=text[-400:])
     kb = [[
         InlineKeyboardButton("Yes (승인)", callback_data="approve_yes"),
         InlineKeyboardButton("No (거부)",  callback_data="approve_no"),

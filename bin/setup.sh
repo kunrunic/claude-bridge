@@ -2,7 +2,7 @@
 # claude-bridge 초기 설치 스크립트
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 echo "========================================"
 echo "  claude-bridge 설치"
@@ -170,6 +170,6 @@ echo "========================================"
 echo "  설치 완료"
 echo "========================================"
 echo
-echo "  ./start.sh  - 백그라운드 실행"
-echo "  ./stop.sh   - 종료"
+echo "  ./bin/start.sh  - 백그라운드 실행"
+echo "  ./bin/stop.sh   - 종료"
 echo

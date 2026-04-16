@@ -18,10 +18,10 @@
 ```bash
 git clone https://github.com/kunrunic/claude-bridge.git
 cd claude-bridge
-./setup.sh
+./bin/setup.sh
 ```
 
-`setup.sh` 가 대화형으로 진행합니다:
+`bin/setup.sh` 가 대화형으로 진행합니다:
 
 1. Python 3.11+ / tmux 확인
 2. `venv` 생성 여부 확인
@@ -34,13 +34,34 @@ cd claude-bridge
 ## 실행
 
 ```bash
-./start.sh    # 백그라운드 시작
-./stop.sh     # 종료 (세션 락 자동 해제)
-./restart.sh  # 재시작 (stop → start)
+./bin/start.sh           # 백그라운드 시작
+./bin/start.sh --dump    # 디버그 덤프 모드 (dump/ 에 0.5초 pane 스냅샷 기록)
+./bin/stop.sh            # 봇만 종료 — tmux/Claude 는 독립 유지 (세션 락은 자동 해제)
+./bin/stop.sh --all      # 봇 + tmux + Claude 모두 종료 (Claude 에 /exit 먼저 보내 graceful shutdown)
+./bin/restart.sh         # 재시작 (stop → start, 인자는 start.sh 로 패스스루)
 ```
+
+**stop 의 두 모드**
+- 기본 `./bin/stop.sh` — 봇만 종료. tmux 세션은 살아있어 다음 `./bin/start.sh` 가 자동 재연결. 봇 재배포/업데이트 용도.
+- `./bin/stop.sh --all` — Claude 에 `/exit` 전송 후 5초 graceful wait → tmux kill-session. Claude 대화 이력은 `~/.claude/projects/` 에 저장되므로 다음번 `/start` 에서 `--resume` 으로 이어갈 수 있음. 다만 실행 중이던 Bash/Edit 등 tool 작업은 중단.
+
+**서버에서 현재 상태 엿보기 — `./bin/capture.sh`**
+
+SSH 접속 후 bridge 가 지금 뭘 하고 있는지 빠르게 확인하는 도구:
+
+```bash
+./bin/capture.sh                 # 현재 패널 마지막 500줄 출력 (ANSI 제거)
+./bin/capture.sh -n 1000         # 줄 수 지정
+./bin/capture.sh --raw           # ANSI 색상 코드 포함
+./bin/capture.sh --save          # capture/YYYYMMDD_HHMMSS.txt 저장, 경로 출력
+./bin/capture.sh --follow        # tmux attach -r (read-only) — 실시간 관찰, Ctrl+B d 로 detach
+```
+
+`--follow` 는 read-only attach 라 키 입력이 봇 쪽으로 전달되지 않아 안전합니다.
 
 - 로그: `logs/YYYY-MM-DD.log` (일별, 3일 보관 후 자동 삭제)
 - PID: `.bot.pid` (중복 실행 방지)
+- 덤프: `dump/YYYYMMDD/HHMMSS_{instance}/` (3일 보관, `--dump` 기동 시에만 생성)
 
 ### 여러 인스턴스 동시 운영
 
@@ -51,11 +72,11 @@ cd claude-bridge
 cp -r claude-bridge claude-bridge-work
 cp -r claude-bridge claude-bridge-personal
 # 각각 다른 봇 토큰으로 setup
-(cd claude-bridge-work && ./setup.sh)
-(cd claude-bridge-personal && ./setup.sh)
+(cd claude-bridge-work && ./bin/setup.sh)
+(cd claude-bridge-personal && ./bin/setup.sh)
 # 동시 실행
-(cd claude-bridge-work && ./start.sh)
-(cd claude-bridge-personal && ./start.sh)
+(cd claude-bridge-work && ./bin/start.sh)
+(cd claude-bridge-personal && ./bin/start.sh)
 ```
 
 → tmux 세션명: `claude_bridge_work`, `claude_bridge_personal` 로 자동 분리됨.
@@ -74,28 +95,69 @@ cp -r claude-bridge claude-bridge-personal
 
 ---
 
-## 문제 진단 & 버그 리포트
+## 문제 진단 & 수리
 
-동작이 이상하다 싶으면 `./repair.sh` 한 줄로 **현장 증거 + Claude 자체 분석**을 받아볼 수 있습니다.
+이상 동작 발견 시 2단계로 진행:
+
+### 1) 버그 리포트 — `./bin/bugreporter.sh`
+
+현장 증거 수집 + Claude 자체 분석 → **수정안 제안서** 작성 (실제 코드 수정은 하지 않음).
 
 ```bash
-./repair.sh
+./bin/bugreporter.sh
 ```
 
 동작:
-1. `repair/YYYYMMDD_HHMMSS/` 디렉토리에 증거 수집
+1. `bugreport/YYYYMMDD_HHMMSS/` 디렉토리에 증거 수집
    - `tmux_capture.txt` — 현재 tmux 패널 마지막 500줄 + 세션 상태
    - `logs/` — 포그라운드 구조화 로그 사본
    - `config_masked.json` — 토큰 마스킹된 설정
-   - `bot.py` — 소스 스냅샷
+   - `bot.py`, `bridge/*.py` — 소스 스냅샷
+   - `dump/` — 최근 1시간 내 덤프가 있으면 자동 포함 (스트리밍 이슈 추적용)
 2. 해당 디렉토리에 `CLAUDE.md` 자동 작성 (역할/분석 순서/출력 양식 지시)
 3. 대화형 Claude Code 실행 → Claude가 증상을 직접 질문
-4. 로그 타임스탬프와 tmux 화면을 교차 대조해 **타임라인 복원 → 원인 가설 → 재현 방법 → 수정 diff** 포함한 `BUG_REPORT.md` 생성
+4. 로그 타임스탬프와 tmux 화면, dump 이벤트를 교차 대조해
+   **타임라인 복원 → 원인 가설 → 재현 방법 → 제안 수정안** 포함한 `BUG_REPORT.md` 생성
+
+### 2) 수리 — `./bin/repairer.sh`
+
+bugreporter 가 만든 BUG_REPORT.md 의 제안을 실제 코드에 적용.
+
+```bash
+./bin/repairer.sh                              # 가장 최근 bugreport 사용
+./bin/repairer.sh bugreport/20260416_153012    # 특정 리포트 지정
+```
+
+동작:
+1. 최근 (또는 지정한) `bugreport/.../BUG_REPORT.md` 로드
+2. 프로젝트 루트에 임시 CLAUDE.md 생성 (수리 가이드)
+3. 대화형 Claude Code 실행 → 수정 범위를 먼저 요약해 승인 요청 → Edit 적용 → 테스트 실행
+4. 종료 시 임시 CLAUDE.md 원복
+5. 커밋은 수행하지 않음 (사용자가 직접 수행)
+
+### 디버그 덤프 — `--dump`
+
+텔레그램에 AI 응답 일부가 누락되는 등 **스트리밍/타이밍 이슈** 추적용:
+
+```bash
+./bin/stop.sh
+./bin/start.sh --dump
+# (이슈 재현 대기)
+./bin/bugreporter.sh   # dump 자동 포함됨
+```
+
+기록 대상:
+- `dump/.../pane_tick.jsonl` — 0.5초 주기 tmux pane 스냅샷 (hash-dedup)
+- `dump/.../events.jsonl` — tmux send_input/send_key, sender send_output,
+  receiver on_message/callback, core flush_peek/flush_block 이벤트 로그
+
+평상시엔 켜지 마세요 — 활성 상태에서는 디스크 사용량이 적지 않습니다 (대략 일당 ~250MB 가정).
+3일 지나면 자동 정리됩니다.
 
 ### 버그 제보
 
 1. [Issues 탭 → New issue → Bug report](../../issues/new?template=bug_report.md)
-2. `repair/YYYYMMDD_HHMMSS/BUG_REPORT.md` 내용 복사 → 이슈 본문에 붙여넣기
+2. `bugreport/YYYYMMDD_HHMMSS/BUG_REPORT.md` 내용 복사 → 이슈 본문에 붙여넣기
 3. 필요 시 텔레그램 스크린샷 첨부
 
 ---

@@ -2,17 +2,30 @@
 # claude-bridge 백그라운드 시작
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 PID_FILE=".bot.pid"
 LOG_DIR="logs"
 LOG_FILE="$LOG_DIR/$(date +%Y-%m-%d).log"
 
+# 옵션 파싱
+DUMP_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --dump) DUMP_MODE=1 ;;
+        -h|--help)
+            echo "사용: ./bin/start.sh [--dump]"
+            echo "  --dump   디버그 덤프 모드 (dump/ 에 0.5초 pane 스냅샷 기록)"
+            exit 0
+            ;;
+    esac
+done
+
 # 중복 실행 확인
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 $PID 2>/dev/null; then
-        echo "이미 실행 중 (PID=$PID). ./stop.sh 먼저 실행하세요."
+        echo "이미 실행 중 (PID=$PID). ./bin/stop.sh 먼저 실행하세요."
         exit 1
     else
         rm -f "$PID_FILE"
@@ -21,13 +34,13 @@ fi
 
 # venv 확인
 if [ ! -d "venv" ]; then
-    echo "venv 없음. ./setup.sh 먼저 실행하세요."
+    echo "venv 없음. ./bin/setup.sh 먼저 실행하세요."
     exit 1
 fi
 
 # config.json 확인
 if [ ! -f "config.json" ]; then
-    echo "config.json 없음. ./setup.sh 먼저 실행하세요."
+    echo "config.json 없음. ./bin/setup.sh 먼저 실행하세요."
     exit 1
 fi
 
@@ -40,7 +53,12 @@ find "$LOG_DIR" -name "*.log" -type f -mtime +3 -delete 2>/dev/null || true
 # 백그라운드 실행
 source venv/bin/activate
 INSTANCE_NAME=$(basename "$PWD")
-nohup python -u bot.py "$INSTANCE_NAME" >> "$LOG_FILE" 2>&1 &
+if [ "$DUMP_MODE" = "1" ]; then
+    echo "dump mode ON (dump/ 에 기록됨)"
+    CB_DUMP=1 nohup python -u bot.py "$INSTANCE_NAME" >> "$LOG_FILE" 2>&1 &
+else
+    nohup python -u bot.py "$INSTANCE_NAME" >> "$LOG_FILE" 2>&1 &
+fi
 BOT_PID=$!
 
 echo $BOT_PID > "$PID_FILE"
@@ -49,7 +67,7 @@ sleep 1
 if kill -0 $BOT_PID 2>/dev/null; then
     echo "✓ 실행됨 (PID=$BOT_PID)"
     echo "  로그: $LOG_FILE"
-    echo "  종료: ./stop.sh"
+    echo "  종료: ./bin/stop.sh"
 else
     echo "✗ 실행 실패. $LOG_FILE 확인"
     rm -f "$PID_FILE"

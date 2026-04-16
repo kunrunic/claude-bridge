@@ -26,7 +26,7 @@ from pathlib import Path
 
 from telegram.ext import Application
 
-from . import config, parser, sender, session, tmux
+from . import config, dump, parser, sender, session, tmux
 from .config import (
     BUSY_STREAM_SEC,
     BUSY_STUCK_SEC,
@@ -150,15 +150,30 @@ class Bridge:
             return 0
         completed = self._completed_blocks(clean, include_last=include_last)
         new_blocks = self.queue.take_new(completed)
+        dump.event(
+            "core", "flush_peek",
+            tag=log_tag,
+            include_last=include_last,
+            completed_count=len(completed),
+            new_count=len(new_blocks),
+            queue_idx=self.queue.idx,
+        )
         sent = 0
         for blk in new_blocks:
             _log("AI→BOT", f"{log_tag} ({len(blk)} chars)")
+            dump.event(
+                "core", "flush_block",
+                tag=log_tag,
+                length=len(blk),
+                preview=blk[:500],
+            )
             try:
                 await sender._send_output(app, chat_id, blk)
                 _log("BOT→USER", f"delivered ({log_tag})")
                 sent += 1
             except Exception as e:
                 _log("FLUSH-SEND-FAIL", f"{log_tag}: {e}")
+                dump.event("core", "flush_send_fail", tag=log_tag, error=str(e)[:200])
                 break
         if sent > 0:
             self.queue.advance(self.queue.idx + sent)
@@ -240,6 +255,8 @@ class Bridge:
         self.queue.reset()
         self.boot_notified = False
         self.trust_ack_pending = False
+        dump.event("core", "monitor_start", chat_id=chat_id, session_id=self.current_session_id)
+        dump.start_tick(tmux, parser, self)
         self.dead_reported = False
         self.was_busy = False
         self.status_msg_id: int | None = None
@@ -612,6 +629,8 @@ class Bridge:
 
         except asyncio.CancelledError:  # P1-5: 외부 cancel 처리
             _log("MONITOR", "cancelled — cleanup")
+            dump.event("core", "monitor_cancelled")
+            dump.stop_tick()
             raise
 
 

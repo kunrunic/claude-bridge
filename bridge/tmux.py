@@ -9,7 +9,7 @@ import asyncio
 import subprocess
 import time
 
-from . import config
+from . import config, dump
 from .config import _log
 
 
@@ -50,6 +50,7 @@ async def pane_output_async() -> str:
 
 def send_input(text: str):
     """Claude 에 텍스트 입력 후 Enter (literal 모드로 안전하게)."""
+    dump.event("tmux", "send_input", text=text[:500], length=len(text))
     tmux_run(["send-keys", "-t", config.TMUX, "-l", text])
     time.sleep(0.1)
     tmux_run(["send-keys", "-t", config.TMUX, "Enter"])
@@ -57,4 +58,5 @@ def send_input(text: str):
 
 def send_key(key: str):
     """Enter / Down / Escape 등 특수 키 전송."""
+    dump.event("tmux", "send_key", key=key)
     tmux_run(["send-keys", "-t", config.TMUX, key])
