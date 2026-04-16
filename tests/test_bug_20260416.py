@@ -86,6 +86,12 @@ def test_dedup_ttl_expires():
     assert not b._already_sent(GREETING)
 
 
+def test_dedup_lru_capacity_large_enough_for_burst():
+    """MAX_SENT_HISTORY 가 TTL 창 내 폭주에도 eviction 안 일어날 만큼 커야 한다.
+    기존 20개 상한으로는 2분 안에 151개 블록 생성되는 상황에서 무한 루프 발생."""
+    assert bot.MAX_SENT_HISTORY >= 500
+
+
 def test_dedup_within_ttl_still_blocks():
     b = bot.Bridge()
     b._mark_sent(GREETING)
