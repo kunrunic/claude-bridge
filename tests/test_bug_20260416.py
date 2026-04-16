@@ -146,6 +146,38 @@ def test_boot_seed_does_not_trigger_settle_resend():
     assert h == b.last_hash
 
 
+# ---------- _is_block_active: 실행 중 도구 블록 감지 ----------
+
+def test_active_block_running():
+    blk = (
+        "⏺ Bash(docker exec qmd qmd query \"test\" 2>&1)\n"
+        "  ⎿  Running… (1m 19s · timeout 2m)"
+    )
+    assert bot._is_block_active(blk)
+
+
+def test_active_block_waiting():
+    blk = (
+        "⏺ Bash(docker exec qmd qmd vsearch \"test\")\n"
+        "  ⎿  Waiting…\n"
+        "     (ctrl+b ctrl+b (twice) to run in background)"
+    )
+    assert bot._is_block_active(blk)
+
+
+def test_completed_block_not_active():
+    blk = (
+        "⏺ Bash(docker exec qmd qmd query \"test\")\n"
+        "  ⎿  Title: VoLTE 설계\n"
+        "     Score: 0.85"
+    )
+    assert not bot._is_block_active(blk)
+
+
+def test_text_response_not_active():
+    assert not bot._is_block_active(GREETING)
+
+
 # ---------- AI-DROP-DUP 로그 경로 ----------
 
 def test_already_sent_check_is_the_drop_trigger():

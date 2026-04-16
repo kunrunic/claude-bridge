@@ -354,6 +354,18 @@ def extract_response_blocks(text: str) -> list[str]:
             blocks.append(block)
     return blocks
 
+
+_ACTIVE_BLOCK_RE = re.compile(
+    r"Running…|Waiting…|ctrl\+b.*background", re.IGNORECASE
+)
+
+
+def _is_block_active(block: str) -> bool:
+    """블록이 아직 실행 중인 도구를 포함하는지 판정 (타이머가 갱신되는 블록)."""
+    tail = block.rsplit("\n", 3)[-3:]
+    return bool(_ACTIVE_BLOCK_RE.search("\n".join(tail)))
+
+
 # -- 세션 락 (멀티 인스턴스 동시 resume 방지) ----------------------------------
 
 _LOCK_DIR = Path.home() / ".claude"
@@ -960,6 +972,8 @@ class Bridge:
                             blocks = extract_response_blocks(clean)
                             # 마지막 블록 제외 (성장 중)
                             for blk in blocks[:-1]:
+                                if _is_block_active(blk):
+                                    continue
                                 if self._already_sent(blk):
                                     continue
                                 _log("AI→BOT", f"stream block ({len(blk)} chars)")
