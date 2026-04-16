@@ -42,10 +42,11 @@ def _load_bot():
           Application=_Dummy, ApplicationBuilder=_Dummy,
           CommandHandler=_Dummy, MessageHandler=_Dummy,
           CallbackQueryHandler=_Dummy, ContextTypes=_Dummy, filters=_Dummy())
+    _stub("telegram.request", HTTPXRequest=_Dummy)
 
     cfg = root / "config.json"
     if not cfg.exists():
-        cfg.write_text('{"bot_token":"x","allowed_ids":[1],"tmux_session":"t"}')
+        cfg.write_text('{"token":"x","claude_path":"/bin/true","allowed_ids":[1],"tmux_session":"t"}')
 
     import importlib
     if "bot" in sys.modules:

@@ -28,7 +28,8 @@ TMUX_SCROLL_LINES   = 200   # pane 캡처 줄 수
 APPROVAL_SCAN_LINES = 30    # 승인 박스 스캔 범위
 SETTLE_TICKS        = 2     # 화면 안정화 틱 수
 BUSY_STREAM_SEC     = 10    # bypass 모드 등 장시간 busy 중 ⏺ 블록 주기적 포워딩 간격
-MAX_SENT_HISTORY    = 20    # 중복 방지 히스토리 최대 개수
+MAX_SENT_HISTORY    = 20    # 중복 방지 히스토리 최대 개수 (메모리 상한)
+DEDUP_TTL_SEC       = 300   # 중복 방지 TTL — 이 시간 이후 동일 응답은 새 응답으로 간주
 STOP_WAIT_SEC       = 5     # stop() /exit 후 대기 초
 MAX_MSG_CHARS       = 3500  # Telegram 메시지 최대 길이
 BUSY_CHECK_TAIL     = 20    # busy 감지 꼬리 줄 수
@@ -533,7 +534,7 @@ class Bridge:
         self.last_approval_summary: str = ""
         self.last_approval_context: str = ""   # P2-1: 도구명 + 요약
         self.last_approval_full: str = ""      # P2-1: pane 전체 내용 (재연결 시 전달용)
-        self._sent_keys: list[str] = []        # 최근 전송 응답 키 (중복 방지)
+        self._sent_keys: list[tuple[str, float]] = []  # (응답 키, 전송 시각) — 중복 방지. TODO: 멀티 chat_id 전환 시 Bridge 인스턴스 분리 필요
         self.limit_reported: bool = False      # 한도 초과 알림 중복 방지
         self._state_lock = asyncio.Lock()      # P1-4: 상태 직렬화
 
@@ -603,16 +604,28 @@ class Bridge:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         return "\n".join(lines)
 
+    def _prune_sent(self):
+        """DEDUP_TTL_SEC 이상 지난 항목 제거"""
+        cutoff = time.time() - DEDUP_TTL_SEC
+        self._sent_keys = [(k, t) for k, t in self._sent_keys if t >= cutoff]
+
     def _already_sent(self, text: str) -> bool:
-        """최근 전송 내역(최대 MAX_SENT_HISTORY개)과 비교해 중복인지 확인"""
+        """최근 DEDUP_TTL_SEC 내 전송 내역과 비교해 중복인지 확인"""
+        self._prune_sent()
         key = self._response_key(text)
-        return key in self._sent_keys
+        return any(k == key for k, _ in self._sent_keys)
 
     def _mark_sent(self, text: str):
-        key = self._response_key(text)
-        self._sent_keys.append(key)
+        self._prune_sent()
+        self._sent_keys.append((self._response_key(text), time.time()))
         if len(self._sent_keys) > MAX_SENT_HISTORY:
             self._sent_keys.pop(0)
+
+    def _commit_sent(self, text: str):
+        """전송 확정 — last_sent 갱신과 dedup 기록을 원자적으로 묶는다.
+        scope: 현 Bridge 인스턴스 (chat_id 1:1 가정). 새 전송 경로 추가 시 반드시 이 헬퍼를 사용할 것."""
+        self.last_sent = text
+        self._mark_sent(text)
 
     async def stop(self):
         self.running = False
@@ -666,8 +679,7 @@ class Bridge:
                 _log("BOT→USER", "delivered (watchdog)")
             except Exception as e:
                 _log("WATCHDOG-SEND-FAIL", str(e))
-            self.last_sent = response
-            self._mark_sent(response)
+            self._commit_sent(response)
         else:
             try:
                 await app.bot.send_message(
@@ -704,14 +716,16 @@ class Bridge:
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
 
-        # 부팅 시점에 pane에 이미 있던 ⏺ 응답은 "이미 사용자가 본 것"으로 간주
+        # 부팅 시점에 pane에 이미 있던 ⏺ 응답은 "이미 사용자가 본 것"으로 간주.
+        # last_sent/_sent_keys 에는 기록하지 않고 last_hash 만 고정 — 이렇게 하면
+        # pane 내용이 변하지 않는 한 settle 파이프라인에 진입하지 않아 재전송되지 않고,
+        # 이후 Claude가 우연히 seed와 동일한 문자열로 응답해도 dedup 에 걸리지 않는다.
         try:
             seed_clean = strip_ansi(await pane_output_async()).strip()
             seed_resp  = extract_last_response(seed_clean)
             if seed_resp:
-                self.last_sent = seed_resp
-                self._mark_sent(seed_resp)
-                _log("BOOT-SEED", f"마지막 ⏺ 블록 {len(seed_resp)}자 무시 처리")
+                self.last_hash = hashlib.md5(seed_clean.encode()).hexdigest()
+                _log("BOOT-SEED", f"마지막 ⏺ 블록 {len(seed_resp)}자 감지 — pane hash 고정")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -834,8 +848,7 @@ class Bridge:
                             _log("AI→BOT", f"pre-approval flush ({len(response)} chars)")
                             await _send_output(app, chat_id, response)
                             _log("BOT→USER", "delivered (pre-approval flush)")
-                            self.last_sent = response
-                            self._mark_sent(response)
+                            self._commit_sent(response)
 
                         # P2-1: 승인 컨텍스트 저장
                         self.last_approval_summary = summarize_approval(clean)
@@ -869,8 +882,7 @@ class Bridge:
                             _log("AI→BOT", f"pre-busy flush ({len(response)} chars)")
                             await _send_output(app, chat_id, response)
                             _log("BOT→USER", "delivered (pre-busy flush)")
-                            self.last_sent = response
-                            self._mark_sent(response)
+                            self._commit_sent(response)
 
                     # busy 진입
                     if busy_now and not self.was_busy:
@@ -954,8 +966,7 @@ class Bridge:
                                 try:
                                     await _send_output(app, chat_id, blk)
                                     _log("BOT→USER", "delivered (busy-stream)")
-                                    self.last_sent = blk
-                                    self._mark_sent(blk)
+                                    self._commit_sent(blk)
                                 except Exception as e:
                                     _log("BUSY-STREAM-FAIL", str(e))
                                     break
@@ -1009,8 +1020,7 @@ class Bridge:
                                 _log("BOT→USER", "delivered (post-compact)")
                             except Exception as e:
                                 _log("POST-COMPACT-SEND-FAIL", str(e))
-                            self.last_sent = response
-                            self._mark_sent(response)
+                            self._commit_sent(response)
                         else:
                             # auto_compacting 상태면 이미 /compact dispatch 시점에 안내했으므로 중복 생략
                             if not self.auto_compacting:
@@ -1056,9 +1066,10 @@ class Bridge:
                             _log("AI→BOT", f"response ({len(to_send)} chars)")
                             await _send_output(app, chat_id, to_send)
                             _log("BOT→USER", "delivered")
-                            self.last_sent = to_send
-                            self._mark_sent(to_send)
+                            self._commit_sent(to_send)
                         else:
+                            if response and "⏺" in response and self._already_sent(response):
+                                _log("AI-DROP-DUP", f"dedup suppressed ({len(response)} chars)")
                             self.last_sent = response or pending
                         pending = ""
                         self.was_busy = False
