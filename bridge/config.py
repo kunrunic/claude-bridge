@@ -10,7 +10,7 @@ from telegram import Update
 
 # -- 상수 -----------------------------------------------------------------------
 
-TMUX_SCROLL_LINES   = 200   # pane 캡처 줄 수
+TMUX_SCROLL_LINES   = 500   # pane 캡처 줄 수 — position-based 큐 가드용 (스크롤백 여유)
 APPROVAL_SCAN_LINES = 30    # 승인 박스 스캔 범위
 SETTLE_TICKS        = 2     # 화면 안정화 틱 수
 BUSY_STREAM_SEC     = 10    # bypass 모드 등 장시간 busy 중 ⏺ 블록 주기적 포워딩 간격
