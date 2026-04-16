@@ -383,7 +383,7 @@ def test_watchdog_notifies_when_no_response():
 def test_context_limit_triggers_compact_dispatch(monkeypatch):
     """'Context limit reached'가 감지되면 send_input('/compact')가 호출되어야 한다."""
     calls = []
-    monkeypatch.setattr(bot, "send_input", lambda text: calls.append(text))
+    monkeypatch.setattr(bot.tmux, "send_input", lambda text: calls.append(text))
 
     # 직접 dispatch 로직을 단위 테스트 형태로 재현
     #   monitor 전체를 돌리는 건 무거우므로, 상태 머신 계약만 확인
@@ -394,7 +394,7 @@ def test_context_limit_triggers_compact_dispatch(monkeypatch):
     # 실제 monitor 내부 분기를 모방
     if bot.has_context_limit(clean) and not br.auto_compacting:
         br.auto_compacting = True
-        bot.send_input("/compact")
+        bot.tmux.send_input("/compact")
 
     assert calls == ["/compact"]
     assert br.auto_compacting is True
@@ -443,13 +443,13 @@ def test_is_busy_true_when_current_status_has_interrupt():
 def test_context_limit_dedupe(monkeypatch):
     """auto_compacting이 이미 True면 /compact를 중복 dispatch하지 않는다."""
     calls = []
-    monkeypatch.setattr(bot, "send_input", lambda text: calls.append(text))
+    monkeypatch.setattr(bot.tmux, "send_input", lambda text: calls.append(text))
 
     br = bot.Bridge()
     br.auto_compacting = True
     clean = "⎿  Context limit reached · /compact or /clear to continue\n❯ \n"
 
     if bot.has_context_limit(clean) and not br.auto_compacting:
-        bot.send_input("/compact")
+        bot.tmux.send_input("/compact")
 
     assert calls == []  # 이미 진행 중이므로 dispatch 안 됨

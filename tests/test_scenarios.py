@@ -59,6 +59,7 @@ def _load_bot(tmux_session: str = "claude_bridge_test"):
         del sys.modules["bot"]
     b = importlib.import_module("bot")
     b.TMUX = tmux_session
+    b.config.TMUX = tmux_session
     return b
 
 
@@ -88,8 +89,8 @@ def test_s1_normal_lifecycle_lock_state(tmp_path):
     def lpath(s): return tmp_path / f".cb_lock_{s}"
 
     # 1) start sessA → 락 획득
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         ok = b.start("sessA", chat_id=111)
     assert ok
@@ -97,10 +98,10 @@ def test_s1_normal_lifecycle_lock_state(tmp_path):
 
     # 2) /end → 락 해제
     async def do_stop():
-        with patch.object(bot, "_lock_path", side_effect=lpath), \
-             patch.object(bot, "_LOCK_DIR", tmp_path), \
-             patch.object(bot, "tmux_run", return_value=_tmux(0)), \
-             patch.object(bot, "send_input"), \
+        with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+             patch.object(bot.session, "_LOCK_DIR", tmp_path), \
+             patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
+             patch.object(bot.tmux, "send_input"), \
              patch("asyncio.sleep", new_callable=AsyncMock):
             await b.stop()
 
@@ -109,13 +110,13 @@ def test_s1_normal_lifecycle_lock_state(tmp_path):
     assert b.current_session_id is None
 
     # 3) /start 후 세션 목록 — sessA가 다시 보여야 함 (락 없으니 _is_locked=False)
-    with patch.object(bot, "_lock_path", side_effect=lpath):
+    with patch.object(bot.session, "_lock_path", side_effect=lpath):
         locked = bot._is_locked("sessA")
     assert not locked
 
     # 4) resume sessA → 락 재획득
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         ok2 = b.start("sessA", chat_id=111)
     assert ok2
@@ -138,10 +139,10 @@ def test_s2_crash_recovery_lock_survives_reattach(tmp_path):
     # reattach: monitor만 연결, current_session_id 미복구
     # /end 호출
     async def do_stop():
-        with patch.object(bot, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
-             patch.object(bot, "_LOCK_DIR", tmp_path), \
-             patch.object(bot, "tmux_run", return_value=_tmux(0)), \
-             patch.object(bot, "send_input"), \
+        with patch.object(bot.session, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
+             patch.object(bot.session, "_LOCK_DIR", tmp_path), \
+             patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
+             patch.object(bot.tmux, "send_input"), \
              patch("asyncio.sleep", new_callable=AsyncMock):
             await b_new.stop()
 
@@ -158,8 +159,8 @@ def test_s2_crash_recovery_stale_cleanup_after_tmux_dies(tmp_path):
     def lpath(s): return tmp_path / f".cb_lock_{s}"
 
     # tmux 세션 죽은 후 _is_locked 호출 → stale 정리
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(1)):   # 세션 없음
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)):   # 세션 없음
         locked = bot._is_locked("sessA")
 
     assert not locked
@@ -176,8 +177,8 @@ def test_s3_force_new_then_new_session_releases_old_lock(tmp_path):
     b = bot.Bridge()
 
     # 1) start sessA
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessA", chat_id=111)
 
@@ -186,14 +187,14 @@ def test_s3_force_new_then_new_session_releases_old_lock(tmp_path):
 
     # 2) force_new: tmux kill (bridge.stop() 없이 직접 kill)
     #    → bridge.current_session_id 는 여전히 "sessA"
-    with patch.object(bot, "tmux_run", return_value=_tmux(0)):
-        bot.tmux_run(["kill-session", "-t", bot.TMUX])
+    with patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)):
+        bot.tmux.tmux_run(["kill-session", "-t", bot.TMUX])
 
     assert b.current_session_id == "sessA"   # force_new는 이를 초기화 안 함
 
     # 3) 신규 세션 선택: bridge.start(None) → 내부에서 _release_lock("sessA") 호출
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start(None, chat_id=111)
 
@@ -207,13 +208,13 @@ def test_s3_force_new_then_resume_other_session(tmp_path):
 
     b = bot.Bridge()
 
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessA", chat_id=111)
 
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessB", chat_id=111)
 
@@ -242,7 +243,7 @@ def test_s4_double_new_session_second_kills_first():
         spawn_calls.append(session_id)
         return True
 
-    with patch.object(bot, "tmux_run", side_effect=fake_tmux), \
+    with patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux), \
          patch.object(b, "_spawn", side_effect=fake_spawn):
         first = b.start(None, chat_id=111)   # 첫 번째 신규
         second = b.start(None, chat_id=111)  # 두 번째 신규
@@ -261,7 +262,7 @@ def test_s4_double_new_session_monitor_count():
     task1 = MagicMock()
     task1.cancel = MagicMock()
 
-    with patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start(None, chat_id=111)
         b.task = task1   # 첫 번째 monitor가 등록됐다고 가정
@@ -283,8 +284,8 @@ def test_s5_reattach_then_start_new_kills_old_tmux(tmp_path):
     b = bot.Bridge()
 
     # 1) 최초 시작 (sessA)
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessA", chat_id=111)
 
@@ -301,11 +302,11 @@ def test_s5_reattach_then_start_new_kills_old_tmux(tmp_path):
         r.stdout = "0"
         return r
 
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", side_effect=fake_tmux), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux), \
          patch.object(b, "_spawn", return_value=True):
         # force_new: 기존 tmux kill
-        bot.tmux_run(["kill-session", "-t", bot.TMUX])
+        bot.tmux.tmux_run(["kill-session", "-t", bot.TMUX])
         # 신규 세션 start
         b.start(None, chat_id=111)
 
@@ -320,14 +321,14 @@ def test_s5_reattach_then_resume_different_session(tmp_path):
     b = bot.Bridge()
 
     # sessA로 시작
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessA", chat_id=111)
 
     # reattach 상태에서 sessB 선택
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         ok = b.start("sessB", chat_id=111)
 
@@ -355,16 +356,16 @@ def test_s6_start_without_end_existing_session(tmp_path):
         return r
 
     # 기존 sessA 실행 중
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", side_effect=fake_tmux), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessA", chat_id=111)
 
     killed.clear()
 
     # /end 없이 바로 신규 세션 start
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", side_effect=fake_tmux), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux), \
          patch.object(b, "_spawn", return_value=True):
         b.start(None, chat_id=111)
 
@@ -381,16 +382,16 @@ def test_s6_graceful_end_vs_force_start(tmp_path):
     b = bot.Bridge()
 
     # graceful: /end → _release_lock 명시적 호출
-    with patch.object(bot, "_lock_path", side_effect=lpath), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessA", chat_id=111)
 
     async def graceful_stop():
-        with patch.object(bot, "_lock_path", side_effect=lpath), \
-             patch.object(bot, "_LOCK_DIR", tmp_path), \
-             patch.object(bot, "tmux_run", return_value=_tmux(0)), \
-             patch.object(bot, "send_input"), \
+        with patch.object(bot.session, "_lock_path", side_effect=lpath), \
+             patch.object(bot.session, "_LOCK_DIR", tmp_path), \
+             patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
+             patch.object(bot.tmux, "send_input"), \
              patch("asyncio.sleep", new_callable=AsyncMock):
             await b.stop()   # /exit 전송 → 5초 대기 → kill
 

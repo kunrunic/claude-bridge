@@ -62,6 +62,7 @@ def _load_bot(tmux_session: str = "claude_bridge_test"):
         del sys.modules["bot"]
     b = importlib.import_module("bot")
     b.TMUX = tmux_session
+    b.config.TMUX = tmux_session
     return b
 
 
@@ -96,8 +97,8 @@ def test_monitor_detects_missing_tmux_session():
     app = _make_app(sent)
 
     async def run():
-        with patch.object(bot, "tmux_run", return_value=_tmux(1)), \
-             patch.object(bot, "extract_last_response", return_value=""):
+        with patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())
@@ -113,8 +114,8 @@ def test_monitor_missing_tmux_sends_only_once():
     app = _make_app(sent)
 
     async def run():
-        with patch.object(bot, "tmux_run", return_value=_tmux(1)), \
-             patch.object(bot, "extract_last_response", return_value=""):
+        with patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())
@@ -132,8 +133,8 @@ def test_monitor_dead_reported_resets_on_new_monitor_call():
     app = _make_app(sent)
 
     async def run():
-        with patch.object(bot, "tmux_run", return_value=_tmux(1)), \
-             patch.object(bot, "extract_last_response", return_value=""):
+        with patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)   # 첫 번째: 죽음 감지
             await b.monitor(app, chat_id=111)   # 두 번째: 새 모니터 세션, 다시 감지
 
@@ -154,11 +155,11 @@ def test_monitor_detects_dead_pane():
     last_output = "마지막 Claude 출력 내용"
 
     async def run():
-        with patch.object(bot, "tmux_run_async", new_callable=AsyncMock, return_value=_tmux(0)), \
+        with patch.object(bot.tmux, "tmux_run_async", new_callable=AsyncMock, return_value=_tmux(0)), \
              patch.object(b, "is_alive_async", new_callable=AsyncMock, return_value=False), \
-             patch.object(bot, "pane_output_async", new_callable=AsyncMock, return_value=last_output), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "extract_last_response", return_value=""):
+             patch.object(bot.tmux, "pane_output_async", new_callable=AsyncMock, return_value=last_output), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())
@@ -174,12 +175,12 @@ def test_monitor_dead_pane_includes_last_output():
     app = _make_app(sent)
 
     async def run():
-        with patch.object(bot, "tmux_run_async", new_callable=AsyncMock, return_value=_tmux(0)), \
+        with patch.object(bot.tmux, "tmux_run_async", new_callable=AsyncMock, return_value=_tmux(0)), \
              patch.object(b, "is_alive_async", new_callable=AsyncMock, return_value=False), \
-             patch.object(bot, "pane_output_async", new_callable=AsyncMock,
+             patch.object(bot.tmux, "pane_output_async", new_callable=AsyncMock,
                           return_value="error: segfault at line 99"), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "extract_last_response", return_value=""):
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())
@@ -194,11 +195,11 @@ def test_monitor_dead_pane_reports_only_once():
     app = _make_app(sent)
 
     async def run():
-        with patch.object(bot, "tmux_run_async", new_callable=AsyncMock, return_value=_tmux(0)), \
+        with patch.object(bot.tmux, "tmux_run_async", new_callable=AsyncMock, return_value=_tmux(0)), \
              patch.object(b, "is_alive_async", new_callable=AsyncMock, return_value=False), \
-             patch.object(bot, "pane_output_async", new_callable=AsyncMock, return_value="output"), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "extract_last_response", return_value=""):
+             patch.object(bot.tmux, "pane_output_async", new_callable=AsyncMock, return_value="output"), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())
@@ -235,9 +236,9 @@ def test_monitor_alive_then_suddenly_dead():
             b.running = False   # 무한루프 방지
 
     async def run():
-        with patch.object(bot, "tmux_run", side_effect=fake_tmux), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "extract_last_response", return_value=""), \
+        with patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "extract_last_response", return_value=""), \
              patch("asyncio.sleep", side_effect=fake_sleep):
             await b.monitor(app, chat_id=111)
 
@@ -253,8 +254,8 @@ def test_lock_is_stale_after_tmux_dies(tmp_path):
     lp = tmp_path / ".cb_lock_sessX"
     lp.write_text(f"{bot.TMUX}\n111")
 
-    with patch.object(bot, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
-         patch.object(bot, "tmux_run", return_value=_tmux(1)):   # tmux 없음
+    with patch.object(bot.session, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)):   # tmux 없음
         locked = bot._is_locked("sessX")
 
     assert not locked
@@ -273,8 +274,8 @@ def test_start_succeeds_after_tmux_dies(tmp_path):
             return _tmux(1)   # 죽은 상태
         return _tmux(0)
 
-    with patch.object(bot, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
-         patch.object(bot, "tmux_run", side_effect=fake_tmux), \
+    with patch.object(bot.session, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
+         patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux), \
          patch.object(b, "_spawn", return_value=True):
         ok = b.start("sessX", chat_id=111)
 
@@ -302,11 +303,11 @@ def test_find_sessions_shows_session_after_tmux_dies(tmp_path, monkeypatch):
     lp = tmp_path / ".cb_lock_sessX"
     lp.write_text(f"{bot.TMUX}\n111")
 
-    monkeypatch.setattr(bot, "PROJECTS", tmp_path)
+    monkeypatch.setattr(bot.config, "PROJECTS", tmp_path)
 
     # tmux 세션 죽음 → stale → find_sessions에 노출
-    with patch.object(bot, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
-         patch.object(bot, "tmux_run", return_value=_tmux(1)):
+    with patch.object(bot.session, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)):
         sessions = bot.find_sessions()
 
     ids = [s["id"] for s in sessions]
@@ -327,8 +328,8 @@ def test_tmux_death_to_restart_sequence(tmp_path):
 
     # 1) monitor 루프: has-session 실패 → 종료 알림
     async def run_monitor():
-        with patch.object(bot, "tmux_run", return_value=_tmux(1)), \
-             patch.object(bot, "extract_last_response", return_value=""):
+        with patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run_monitor())
@@ -338,8 +339,8 @@ def test_tmux_death_to_restart_sequence(tmp_path):
     assert lp.exists()
 
     # 2) /start → 신규 세션 (stale 락 자동 정리 후 resume 가능)
-    with patch.object(bot, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
-         patch.object(bot, "tmux_run", return_value=_tmux(1)), \
+    with patch.object(bot.session, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)), \
          patch.object(b, "_spawn", return_value=True):
         # has-session=1 이므로 stale → 정리 후 acquire
         ok = b.start("sessY", chat_id=111)
@@ -357,8 +358,8 @@ def test_tmux_death_lock_released_only_via_stop_or_stale(tmp_path):
     app = _make_app([])
 
     async def run():
-        with patch.object(bot, "tmux_run", return_value=_tmux(1)), \
-             patch.object(bot, "extract_last_response", return_value=""):
+        with patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)), \
+             patch.object(bot.parser, "extract_last_response", return_value=""):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())

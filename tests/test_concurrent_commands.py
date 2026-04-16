@@ -65,6 +65,7 @@ def _load_bot(tmux_session: str = "claude_bridge_test"):
         del sys.modules["bot"]
     b = importlib.import_module("bot")
     b.TMUX = tmux_session
+    b.config.TMUX = tmux_session
     return b
 
 
@@ -82,10 +83,10 @@ def _tmux(returncode: int) -> MagicMock:
 def test_double_acquire_same_session_same_tmux(tmp_path):
     """같은 인스턴스가 같은 session_id를 두 번 acquire → 두 번째 False"""
     lp = tmp_path / ".cb_lock_sessX"
-    with patch.object(bot, "_lock_path", return_value=lp):
+    with patch.object(bot.session, "_lock_path", return_value=lp):
         first = bot._acquire_lock("sessX", chat_id=111)
         # 두 번째: tmux 세션이 살아있다고 가정 (방금 spawn됨)
-        with patch.object(bot, "tmux_run", return_value=_tmux(0)):
+        with patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)):
             second = bot._acquire_lock("sessX", chat_id=111)
     assert first is True
     assert second is False   # 중복 spawn 방지
@@ -105,8 +106,8 @@ def test_bridge_start_double_same_session(tmp_path):
     def fake_lock_path(s):
         return lp
 
-    with patch.object(bot, "_lock_path", side_effect=fake_lock_path), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=fake_lock_path), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", side_effect=fake_spawn):
         first = b.start("sessY", chat_id=111)   # 락 획득, spawn
         second = b.start("sessY", chat_id=111)  # 락 이미 있음 → False
@@ -121,8 +122,8 @@ def test_bridge_start_double_error_is_lock_conflict_not_other_instance(tmp_path)
     lp = tmp_path / ".cb_lock_sessZ"
     b = bot.Bridge()
 
-    with patch.object(bot, "_lock_path", return_value=lp), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", return_value=lp), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("sessZ", chat_id=111)
         second_ok = b.start("sessZ", chat_id=111)
@@ -146,9 +147,9 @@ def test_stop_twice_no_exception(tmp_path):
     b.running = True
 
     async def run():
-        with patch.object(bot, "_lock_path", return_value=lp), \
-             patch.object(bot, "tmux_run", return_value=_tmux(0)), \
-             patch.object(bot, "send_input"), \
+        with patch.object(bot.session, "_lock_path", return_value=lp), \
+             patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
+             patch.object(bot.tmux, "send_input"), \
              patch("asyncio.sleep", new_callable=AsyncMock):
             await b.stop()
             await b.stop()   # 두 번째 — 예외 없어야 함
@@ -165,10 +166,10 @@ def test_stop_releases_lock_only_once(tmp_path):
     b.current_session_id = "sessF"
 
     async def run():
-        with patch.object(bot, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
-             patch.object(bot, "_LOCK_DIR", tmp_path), \
-             patch.object(bot, "tmux_run", return_value=_tmux(0)), \
-             patch.object(bot, "send_input"), \
+        with patch.object(bot.session, "_lock_path", side_effect=lambda s: tmp_path / f".cb_lock_{s}"), \
+             patch.object(bot.session, "_LOCK_DIR", tmp_path), \
+             patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
+             patch.object(bot.tmux, "send_input"), \
              patch("asyncio.sleep", new_callable=AsyncMock):
             await b.stop()
             assert not lp.exists()
@@ -189,9 +190,9 @@ def test_force_new_double_kill_no_exception():
         r.returncode = 0 if call_count[0] == 1 else 1
         return r
 
-    with patch.object(bot, "tmux_run", side_effect=fake_tmux):
-        bot.tmux_run(["kill-session", "-t", bot.TMUX])
-        bot.tmux_run(["kill-session", "-t", bot.TMUX])   # 예외 없어야 함
+    with patch.object(bot.tmux, "tmux_run", side_effect=fake_tmux):
+        bot.tmux.tmux_run(["kill-session", "-t", bot.TMUX])
+        bot.tmux.tmux_run(["kill-session", "-t", bot.TMUX])   # 예외 없어야 함
 
     assert call_count[0] == 2
 
@@ -230,16 +231,16 @@ def test_reattach_double_cancels_previous_task():
 def test_cmd_start_double_when_no_session_both_show_list():
     """/start 두 번 다 tmux 세션 없으면 두 번 다 목록 표시 — 중복 메뉴 발생"""
     # 현재 방어 없음을 문서화하는 테스트 (regression 용)
-    with patch.object(bot, "tmux_run", return_value=_tmux(1)):   # 세션 없음
+    with patch.object(bot.tmux, "tmux_run", return_value=_tmux(1)):   # 세션 없음
         # has-session returncode=1 → cmd_start가 find_sessions 호출
-        check = bot.tmux_run(["has-session", "-t", bot.TMUX])
+        check = bot.tmux.tmux_run(["has-session", "-t", bot.TMUX])
     assert check.returncode == 1   # 두 번째 /start도 동일 경로 진입 가능
 
 
 def test_cmd_start_when_session_alive_shows_reattach():
     """/start 시 tmux 세션이 살아있으면 재연결/새로시작 메뉴 표시"""
-    with patch.object(bot, "tmux_run", return_value=_tmux(0)):   # 세션 있음
-        check = bot.tmux_run(["has-session", "-t", bot.TMUX])
+    with patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)):   # 세션 있음
+        check = bot.tmux.tmux_run(["has-session", "-t", bot.TMUX])
     assert check.returncode == 0   # → cmd_start가 reattach 메뉴 반환
 
 
@@ -251,10 +252,10 @@ def test_esc_double_sends_twice():
     def fake_send_key(key):
         call_args.append(key)
 
-    with patch.object(bot, "send_key", side_effect=fake_send_key), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)):
-        bot.send_key("Escape")
-        bot.send_key("Escape")
+    with patch.object(bot.tmux, "send_key", side_effect=fake_send_key), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)):
+        bot.tmux.send_key("Escape")
+        bot.tmux.send_key("Escape")
 
     assert call_args.count("Escape") == 2
 
@@ -299,8 +300,8 @@ def test_bridge_start_sequential_different_sessions(tmp_path):
 
     b = bot.Bridge()
 
-    with patch.object(bot, "_lock_path", side_effect=fake_lock_path), \
-         patch.object(bot, "tmux_run", return_value=_tmux(0)), \
+    with patch.object(bot.session, "_lock_path", side_effect=fake_lock_path), \
+         patch.object(bot.tmux, "tmux_run", return_value=_tmux(0)), \
          patch.object(b, "_spawn", return_value=True):
         b.start("A", chat_id=111)
         assert lp_a.exists()

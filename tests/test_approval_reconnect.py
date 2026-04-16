@@ -67,6 +67,7 @@ def _load_bot(tmux_session: str = "claude_bridge_test"):
         del sys.modules["bot"]
     b = importlib.import_module("bot")
     b.TMUX = tmux_session
+    b.config.TMUX = tmux_session
     return b
 
 
@@ -117,11 +118,11 @@ def test_approve_yes_normal_prompt_present():
         update = _make_update(data="approve_yes")
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value="Do you want to proceed?"), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=True), \
-             patch.object(bot, "send_key", side_effect=lambda k: keys_sent.append(k)):
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value="Do you want to proceed?"), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=True), \
+             patch.object(bot.tmux, "send_key", side_effect=lambda k: keys_sent.append(k)):
             await bot.on_callback(update, ctx)
 
     asyncio.run(run())
@@ -142,11 +143,11 @@ def test_approve_no_normal_prompt_present():
         update = _make_update(data="approve_no")
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value="Do you want to proceed?"), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=True), \
-             patch.object(bot, "send_key", side_effect=lambda k: keys_sent.append(k)):
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value="Do you want to proceed?"), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=True), \
+             patch.object(bot.tmux, "send_key", side_effect=lambda k: keys_sent.append(k)):
             await bot.on_callback(update, ctx)
 
     asyncio.run(run())
@@ -170,12 +171,12 @@ def test_approve_yes_late_session_alive():
         update = _make_update(data="approve_yes")
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value="일반 Claude 프롬프트"), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=False), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value="일반 Claude 프롬프트"), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=False), \
              patch.object(bot.bridge, "is_alive", return_value=True), \
-             patch.object(bot, "send_input", side_effect=lambda t: inputs_sent.append(t)):
+             patch.object(bot.tmux, "send_input", side_effect=lambda t: inputs_sent.append(t)):
             await bot.on_callback(update, ctx)
 
     asyncio.run(run())
@@ -196,12 +197,12 @@ def test_approve_no_late_session_alive():
         update = _make_update(data="approve_no")
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value="일반 Claude 프롬프트"), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=False), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value="일반 Claude 프롬프트"), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=False), \
              patch.object(bot.bridge, "is_alive", return_value=True), \
-             patch.object(bot, "send_input", side_effect=lambda t: inputs_sent.append(t)):
+             patch.object(bot.tmux, "send_input", side_effect=lambda t: inputs_sent.append(t)):
             await bot.on_callback(update, ctx)
 
     asyncio.run(run())
@@ -235,15 +236,15 @@ def test_approve_yes_late_session_dead_restarts():
             tasks_created.append(t)
             return t
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value=""), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=False), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value=""), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=False), \
              patch.object(bot.bridge, "is_alive", return_value=False), \
              patch.object(bot.bridge, "start", side_effect=fake_start), \
              patch("asyncio.create_task", side_effect=fake_create_task), \
              patch("asyncio.sleep", new_callable=AsyncMock), \
-             patch.object(bot, "send_input", side_effect=lambda t: inputs_sent.append(t)):
+             patch.object(bot.tmux, "send_input", side_effect=lambda t: inputs_sent.append(t)):
             await bot.on_callback(update, ctx)
 
     asyncio.run(run())
@@ -269,10 +270,10 @@ def test_approve_yes_late_session_dead_start_fails():
         )
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value=""), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=False), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value=""), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=False), \
              patch.object(bot.bridge, "is_alive", return_value=False), \
              patch.object(bot.bridge, "start", return_value=False):
             await bot.on_callback(update, ctx)
@@ -301,10 +302,10 @@ def test_approve_no_late_session_dead_shows_restart_menu():
         )
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
-             patch.object(bot, "pane_output", return_value=""), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "is_approval", return_value=False), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
+             patch.object(bot.tmux, "pane_output", return_value=""), \
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.parser, "is_approval", return_value=False), \
              patch.object(bot.bridge, "is_alive", return_value=False):
             await bot.on_callback(update, ctx)
 
@@ -335,7 +336,7 @@ def test_resume_after_no_restarts_session():
             tasks_created.append(t)
             return t
 
-        with patch.object(bot, "is_allowed", return_value=True), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
              patch.object(bot.bridge, "start", side_effect=fake_start), \
              patch("asyncio.create_task", side_effect=fake_create_task):
             await bot.on_callback(update, ctx)
@@ -356,7 +357,7 @@ def test_resume_after_no_cancel_does_nothing():
         )
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True):
+        with patch.object(bot.config, "is_allowed", return_value=True):
             await bot.on_callback(update, ctx)
 
     asyncio.run(run())
@@ -375,7 +376,7 @@ def test_resume_after_no_start_fails_shows_error():
         )
         ctx = _make_ctx()
 
-        with patch.object(bot, "is_allowed", return_value=True), \
+        with patch.object(bot.config, "is_allowed", return_value=True), \
              patch.object(bot.bridge, "start", return_value=False):
             await bot.on_callback(update, ctx)
 
@@ -409,13 +410,13 @@ def test_monitor_saves_approval_context():
         return approval_pane
 
     async def run():
-        with patch.object(bot, "pane_output_async", side_effect=fake_pane), \
-             patch.object(bot, "tmux_run_async", new_callable=AsyncMock,
+        with patch.object(bot.tmux, "pane_output_async", side_effect=fake_pane), \
+             patch.object(bot.tmux, "tmux_run_async", new_callable=AsyncMock,
                           return_value=_tmux(0)), \
              patch.object(b, "is_alive_async", new_callable=AsyncMock, return_value=True), \
-             patch.object(bot, "strip_ansi", side_effect=lambda x: x), \
-             patch.object(bot, "send_key"), \
-             patch.object(bot, "_send_approval", new_callable=AsyncMock):
+             patch.object(bot.parser, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(bot.tmux, "send_key"), \
+             patch.object(bot.sender, "_send_approval", new_callable=AsyncMock):
             await b.monitor(app, chat_id=111)
 
     asyncio.run(run())
