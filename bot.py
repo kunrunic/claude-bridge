@@ -547,6 +547,7 @@ class Bridge:
         self.last_approval_context: str = ""   # P2-1: 도구명 + 요약
         self.last_approval_full: str = ""      # P2-1: pane 전체 내용 (재연결 시 전달용)
         self._sent_keys: list[tuple[str, float]] = []  # (응답 키, 전송 시각) — 중복 방지. TODO: 멀티 chat_id 전환 시 Bridge 인스턴스 분리 필요
+        self.busy_stream_idx: int = 0                   # busy 세션 내 이미 스트리밍한 완료 블록 수 (position-based dedup)
         self.limit_reported: bool = False      # 한도 초과 알림 중복 방지
         self._state_lock = asyncio.Lock()      # P1-4: 상태 직렬화
 
@@ -724,6 +725,7 @@ class Bridge:
         self.auto_compacting: bool = False       # Context limit 자동 /compact 진행 중
         self.compact_error_halted: bool = False  # /compact 실패 감지 → 재시도 중단
         self.busy_last_stream_at: float | None = None  # bypass 모드 중 ⏺ 스트리밍 throttle
+        self.busy_stream_idx: int = 0                   # busy 세션 내 이미 스트리밍한 완료 블록 수 (position-based dedup)
         settle = 0
         pending = ""
         error_count = 0   # P1-6: 연속 오류 카운터
@@ -907,8 +909,9 @@ class Bridge:
                         # 잔존 스크롤백의 Crunched/Compacting 마커로 오탐하지 않도록
                         # busy 진입 시점의 상태를 snapshot — 이후 "새로 등장한 경우"에만 감지
                         self._pre_busy_had_compact = has_compaction(clean)
-                        # busy 스트리밍 타이머 초기화 — 진입 직후 1회는 즉시 가능
+                        # busy 스트리밍 타이머/인덱스 초기화 — 진입 직후 1회는 즉시 가능
                         self.busy_last_stream_at = None
+                        self.busy_stream_idx = 0
                         label, cc_sec = busy_status(clean)
                         self.last_status_label = label
                         _log("AI-BUSY", label)
@@ -970,10 +973,13 @@ class Bridge:
                         if should_stream and not self.awaiting_approval:
                             self.busy_last_stream_at = now_ts
                             blocks = extract_response_blocks(clean)
-                            # 마지막 블록 제외 (성장 중)
-                            for blk in blocks[:-1]:
-                                if _is_block_active(blk):
-                                    continue
+                            # 마지막 블록 제외 (성장 중) + 실행 중 도구 블록 제외
+                            completed = [b for b in blocks[:-1] if not _is_block_active(b)]
+                            # position-based: busy 세션 내 이미 전송한 완료 블록 개수를 넘어선 것만 송신.
+                            # content 가 바뀌어도(진행 카운터, todo 체크 등) 같은 인덱스면 재전송 안 함.
+                            new_blocks = completed[self.busy_stream_idx:]
+                            for blk in new_blocks:
+                                # 방어선: 스크롤백 밀림/재정렬 대비 content-hash 1회 더 체크
                                 if self._already_sent(blk):
                                     continue
                                 _log("AI→BOT", f"stream block ({len(blk)} chars)")
@@ -984,6 +990,8 @@ class Bridge:
                                 except Exception as e:
                                     _log("BUSY-STREAM-FAIL", str(e))
                                     break
+                            # idx 는 단조증가 — 스크롤백으로 completed 길이가 줄어도 retreat 금지
+                            self.busy_stream_idx = max(self.busy_stream_idx, len(completed))
 
                         if self.status_msg_id and self.busy_started_at:
                             elapsed = int(now_ts - self.busy_started_at)

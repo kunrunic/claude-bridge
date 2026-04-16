@@ -184,6 +184,64 @@ def test_text_response_not_active():
     assert not bot._is_block_active(GREETING)
 
 
+# ---------- position-based busy-stream ----------
+
+def test_busy_stream_idx_initializes_to_zero():
+    b = bot.Bridge()
+    assert b.busy_stream_idx == 0
+
+
+def test_busy_stream_position_prevents_resend_on_content_change():
+    """
+    busy-stream 핵심: 완료된 블록의 content 가 바뀌어도(진행 카운터, todo
+    체크 상태 등) 같은 position 이면 재전송하지 않는다.
+
+    시나리오:
+    - Tick 1: [A, B(progress: 5), C(last, growing)] → A, B 전송, idx=2
+    - Tick 2: [A, B(progress: 7 — 카운터 갱신), C(last, growing)] → 둘 다 idx<2 이므로 skip
+    """
+    b = bot.Bridge()
+
+    completed_t1 = [
+        "⏺ Block A — 완료",
+        "⏺ Block B — 진행 카운터 (md=100)",
+    ]
+    completed_t2 = [
+        "⏺ Block A — 완료",
+        "⏺ Block B — 진행 카운터 (md=200)",   # 카운터만 바뀜
+    ]
+
+    # Tick 1: 전부 새 블록
+    new_t1 = completed_t1[b.busy_stream_idx:]
+    assert new_t1 == completed_t1
+    b.busy_stream_idx = max(b.busy_stream_idx, len(completed_t1))
+    assert b.busy_stream_idx == 2
+
+    # Tick 2: content 바뀌었지만 position 은 동일 → 빈 리스트
+    new_t2 = completed_t2[b.busy_stream_idx:]
+    assert new_t2 == []
+
+
+def test_busy_stream_idx_monotonic_under_scrollback():
+    """스크롤백으로 앞 블록이 잘려나가 completed 길이가 줄어도 idx 는 retreat 하지 않는다."""
+    b = bot.Bridge()
+    b.busy_stream_idx = max(b.busy_stream_idx, 5)
+    # 다음 tick 에 completed 가 3개로 줄어든 경우
+    b.busy_stream_idx = max(b.busy_stream_idx, 3)
+    assert b.busy_stream_idx == 5
+
+
+def test_busy_stream_sends_only_new_completed_blocks():
+    """완료 블록이 추가되면 그 부분만 전송 대상."""
+    b = bot.Bridge()
+    completed_t1 = ["⏺ A", "⏺ B"]
+    b.busy_stream_idx = len(completed_t1)
+
+    completed_t2 = ["⏺ A", "⏺ B", "⏺ C", "⏺ D"]
+    new = completed_t2[b.busy_stream_idx:]
+    assert new == ["⏺ C", "⏺ D"]
+
+
 # ---------- AI-DROP-DUP 로그 경로 ----------
 
 def test_already_sent_check_is_the_drop_trigger():
