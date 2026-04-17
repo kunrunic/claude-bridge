@@ -242,8 +242,15 @@ def _response_region(text: str) -> tuple[list[str], int]:
     for i in range(len(lines) - 1, max(-1, len(lines) - 15), -1):
         if is_divider(lines[i]):
             divider_positions.append(i)
+        # "Welcome back" / "Claude Code v" 는 세션 재시작(restart-in-place) 시
+        # 중간에 다시 찍히는 배너일 때만 end 경계로 사용한다.
+        # 초기 부팅 시 pane 맨 위에 찍히는 배너를 end 로 오인하면 end=0 이 되어
+        # extract_response_blocks 가 항상 빈 리스트를 반환한다 — 짧은 pane
+        # (fresh 세션) 에서 `⏺` 응답이 사용자에게 전달되지 않는 회귀.
         if "Welcome back" in lines[i] or "Claude Code v" in lines[i]:
-            end = min(end, i)
+            has_content_above = any(lines[j].strip() for j in range(0, i))
+            if has_content_above:
+                end = min(end, i)
     if divider_positions:
         end = min(end, min(divider_positions))
 
