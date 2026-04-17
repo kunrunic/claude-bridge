@@ -20,9 +20,10 @@ APPROVAL_RE = re.compile(
 )
 # 라이브 승인 박스의 번호 선택지 (` ❯ 1. Yes`).
 _APPROVAL_CHOICE_RE = re.compile(r"^\s*❯?\s*1\.\s+Yes\b", re.MULTILINE)
-# 입력 박스 divider — Claude Code 가 자기 ❯ 입력 프롬프트를 감쌀 때 렌더하는 전폭 ─ 라인.
-# 라이브 승인창은 입력 박스 자리를 대체하므로 `❯ 1. Yes` 아래에 이 라인이 나타나지 않는다.
-_INPUT_DIVIDER_RE = re.compile(r"^\s*─{20,}\s*$")
+# 입력 박스 divider — Claude Code 가 자기 ❯ 입력 프롬프트를 감쌀 때 렌더하는 연속 ─ 라인.
+# 라이브 승인/피커 창은 입력 박스 자리를 대체하므로 아래에 이 라인이 나타나지 않는다.
+# 폭 10 이상으로 완화 — 좁은 터미널(<80컬럼)에서도 divider 판정이 동작하도록.
+_INPUT_DIVIDER_RE = re.compile(r"^\s*─{10,}\s*$")
 # 폴더 신뢰 프롬프트 (새 디렉토리 진입 시 한 번 뜸)
 TRUST_RE = re.compile(
     r"Quick safety check|"
@@ -63,15 +64,43 @@ def is_trust_prompt(text: str) -> bool:
 
 
 def is_resume_picker(text: str) -> bool:
-    """긴/오래된 세션 resume 시 summary/full 선택 UI 가 떠 있는지."""
-    return bool(RESUME_PICKER_RE.search(text))
+    """긴/오래된 세션 resume 시 summary/full 선택 UI 가 떠 있는지.
+
+    라이브 피커 판정은 is_approval 과 동일한 3단 구조:
+      1) tail 60줄 안에서 RESUME_PICKER_RE 매치
+      2) 매치 줄 아래에 입력 박스 divider(연속 ─) 가 **없음** — 라이브 피커가
+         입력 박스 자리를 대체하기 때문. 사용자가 텔레그램에 해당 텍스트를
+         붙여넣어 pane 에 echo 된 scrollback 은 Claude Code 가 여전히 자기
+         입력 박스를 렌더해 divider 가 남아있어 걸러진다.
+    """
+    tail_lines = text.splitlines()[-60:]
+    match_idx: int | None = None
+    joined_tail = "\n".join(tail_lines)
+    if not RESUME_PICKER_RE.search(joined_tail):
+        return False
+    # 매치된 키워드가 걸리는 마지막 줄 번호를 역방향으로 탐색
+    for i in range(len(tail_lines) - 1, -1, -1):
+        if (
+            "Resume from summary" in tail_lines[i]
+            or "Resume full session" in tail_lines[i]
+            or "Resuming the full session" in tail_lines[i]
+        ):
+            match_idx = i
+            break
+    if match_idx is None:
+        return False
+    for ln in tail_lines[match_idx + 1 :]:
+        if _INPUT_DIVIDER_RE.match(ln):
+            return False
+    return True
 
 
 def is_approval(text: str) -> bool:
     # 라이브 승인 박스 판정 3단:
     #   1) tail 에 `❯ 1. Yes` 선택지
-    #   2) Yes 줄 바로 위 ~8줄 안에 `Do you want to …` 프롬프트
-    #   3) Yes 줄 아래에 입력 박스 divider(전폭 ─) 가 **없음** — 승인 박스가
+    #   2) Yes 줄 바로 위 ~15줄 안에 `Do you want to …` 프롬프트
+    #      (긴 diff 프리뷰 승인창을 놓치지 않도록 8 → 15 완화)
+    #   3) Yes 줄 아래에 입력 박스 divider(연속 ─) 가 **없음** — 승인 박스가
     #      입력 박스 자리를 대체하기 때문. 텔레그램에 echo 된 scrollback 은
     #      Claude Code 가 여전히 자기 입력 박스를 렌더해 divider 가 남는다.
     tail_lines = text.splitlines()[-60:]
@@ -82,7 +111,7 @@ def is_approval(text: str) -> bool:
             break
     if yes_idx is None:
         return False
-    window_top = max(0, yes_idx - 8)
+    window_top = max(0, yes_idx - 15)
     if not APPROVAL_RE.search("\n".join(tail_lines[window_top : yes_idx + 1])):
         return False
     for ln in tail_lines[yes_idx + 1 :]:

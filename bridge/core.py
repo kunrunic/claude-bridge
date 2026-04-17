@@ -85,18 +85,18 @@ class Bridge:
         ])
         if r.returncode != 0:
             return False
-        tmux.tmux_run(["set-option", "-t", tmux._t(), "remain-on-exit", "on"])
+        tmux.tmux_run(["set-option", "-t", tmux._ts(), "remain-on-exit", "on"])
         return True
 
     def is_alive(self) -> bool:
         """tmux 세션에 실행 중인 프로세스가 살아있는지."""
-        r = tmux.tmux_run(["list-panes", "-t", tmux._t(), "-F", "#{pane_dead}"])
+        r = tmux.tmux_run(["list-panes", "-t", tmux._ts(), "-F", "#{pane_dead}"])
         if r.returncode != 0:
             return False
         return r.stdout.strip() == "0"
 
     async def is_alive_async(self) -> bool:
-        r = await tmux.tmux_run_async(["list-panes", "-t", tmux._t(), "-F", "#{pane_dead}"])
+        r = await tmux.tmux_run_async(["list-panes", "-t", tmux._ts(), "-F", "#{pane_dead}"])
         if r.returncode != 0:
             return False
         return r.stdout.strip() == "0"
@@ -106,14 +106,14 @@ class Bridge:
             return False
         session._release_lock(self.current_session_id)
         self.current_session_id = session_id
-        tmux.tmux_run(["kill-session", "-t", tmux._t()])
+        tmux.tmux_run(["kill-session", "-t", tmux._ts()])
         return self._spawn(session_id)
 
     def restart(self) -> bool:
         self.running = False
         if self.task:
             self.task.cancel()
-        tmux.tmux_run(["kill-session", "-t", tmux._t()])
+        tmux.tmux_run(["kill-session", "-t", tmux._ts()])
         return self._spawn(self.current_session_id)
 
     def perm_label(self) -> str:
@@ -202,10 +202,10 @@ class Bridge:
             self.task.cancel()
         # 내 세션이 실제로 존재할 때만 /exit 보내고 kill 한다.
         # (prefix-match 로 엉뚱한 sibling 세션을 건드리는 사고 방지)
-        if tmux.tmux_run(["has-session", "-t", tmux._t()]).returncode == 0:
+        if tmux.tmux_run(["has-session", "-t", tmux._ts()]).returncode == 0:
             tmux.send_input("/exit")
             await asyncio.sleep(STOP_WAIT_SEC)
-            tmux.tmux_run(["kill-session", "-t", tmux._t()])
+            tmux.tmux_run(["kill-session", "-t", tmux._ts()])
         else:
             _log("STOP", f"session '{config.TMUX}' already gone — skip /exit+kill")
         for sid, _ in session._my_locks():
@@ -312,7 +312,7 @@ class Bridge:
         try:
             while self.running:
                 try:
-                    check = await tmux.tmux_run_async(["has-session", "-t", tmux._t()])
+                    check = await tmux.tmux_run_async(["has-session", "-t", tmux._ts()])
                     if check.returncode != 0:
                         if not self.dead_reported:
                             _log("MONITOR", f"tmux session '{config.TMUX}' gone — exiting")

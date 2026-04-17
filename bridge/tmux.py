@@ -13,18 +13,23 @@ from . import config, dump
 from .config import _log
 
 
-def _t(name: str | None = None) -> str:
-    """tmux target 을 exact-match 로 강제하는 '=<name>:' 형태 반환.
+def _ts(name: str | None = None) -> str:
+    """target-session 을 exact-match 로 강제 ('=<name>').
 
-    tmux 는 -t <name> 에 exact → prefix → fnmatch 순서로 매칭하므로,
-    'claude_bridge' 가 없을 때 'claude_bridge2' 같은 sibling 세션을
-    prefix 매치로 오인 조작하는 사고를 막기 위해 '=' 접두어를 쓴다.
+    has-session / kill-session / list-panes / set-option 처럼 tmux 가
+    target-session 을 받는 명령에 쓴다. prefix-match 로 sibling (예:
+    claude_bridge → claude_bridge2) 을 오인 조작하는 사고를 막는다.
+    """
+    return f"={name if name is not None else config.TMUX}"
 
-    주의: '=<name>' 만 붙이면 target-session 류 (has-session/kill-session/
-    list-panes/set-option) 에서만 동작하고, target-pane 을 받는
-    send-keys/capture-pane 에서는 "can't find pane: =<name>" 로 실패한다.
-    반면 '=<name>:' (콜론 접미 — 현재 세션의 아무 window/pane) 은 양쪽
-    모두에서 작동하며 exact-match 도 그대로 유지된다.
+
+def _tp(name: str | None = None) -> str:
+    """target-pane 을 exact-match 로 강제 ('=<name>:').
+
+    send-keys / capture-pane 처럼 tmux 가 target-pane 을 받는 명령에 쓴다.
+    '=<name>' (target-session 전용) 을 그대로 넘기면 "can't find pane"
+    으로 실패하므로 콜론을 붙여 "세션 <name>, 기본 window, 기본 pane"
+    형태로 지정한다. '=' 덕분에 exact-match 는 그대로 유지.
     """
     return f"={name if name is not None else config.TMUX}:"
 
@@ -52,14 +57,14 @@ async def tmux_run_async(cmd: list[str]) -> subprocess.CompletedProcess:
 def pane_output() -> str:
     """현재 tmux 패널 내용 반환 (마지막 TMUX_SCROLL_LINES줄)."""
     return tmux_run(
-        ["capture-pane", "-t", _t(), "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
+        ["capture-pane", "-t", _tp(), "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
     ).stdout
 
 
 async def pane_output_async() -> str:
     """pane_output 의 비동기 버전."""
     r = await tmux_run_async(
-        ["capture-pane", "-t", _t(), "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
+        ["capture-pane", "-t", _tp(), "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
     )
     return r.stdout
 
@@ -67,12 +72,12 @@ async def pane_output_async() -> str:
 def send_input(text: str):
     """Claude 에 텍스트 입력 후 Enter (literal 모드로 안전하게)."""
     dump.event("tmux", "send_input", text=text[:500], length=len(text))
-    tmux_run(["send-keys", "-t", _t(), "-l", text])
+    tmux_run(["send-keys", "-t", _tp(), "-l", text])
     time.sleep(0.1)
-    tmux_run(["send-keys", "-t", _t(), "Enter"])
+    tmux_run(["send-keys", "-t", _tp(), "Enter"])
 
 
 def send_key(key: str):
     """Enter / Down / Escape 등 특수 키 전송."""
     dump.event("tmux", "send_key", key=key)
-    tmux_run(["send-keys", "-t", _t(), key])
+    tmux_run(["send-keys", "-t", _tp(), key])

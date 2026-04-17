@@ -134,7 +134,7 @@ async def post_init(app: Application):
         BotCommand("whoami", "내 chat_id 확인 (관리자 등록용)"),
     ])
 
-    check = tmux.tmux_run(["has-session", "-t", config.TMUX])
+    check = tmux.tmux_run(["has-session", "-t", tmux._ts()])
     if check.returncode == 0 and ALLOWED_IDS:
         chat_id = next(iter(ALLOWED_IDS))
         await app.bot.send_message(chat_id, "기존 세션에 재연결되었습니다.")

@@ -79,26 +79,32 @@ def _tmux(rc: int) -> MagicMock:
 
 # ── _t() 헬퍼 ────────────────────────────────────────────────────────────────
 
-def test_t_helper_prefixes_equals_and_colon_for_explicit_name():
-    """exact-match('=' 접두) + target-pane 호환('콜론' 접미)."""
+def test_ts_helper_target_session_format():
+    """target-session: '=<name>' (콜론 없음)."""
     from bridge import tmux
-    assert tmux._t("claude_bridge") == "=claude_bridge:"
+    assert tmux._ts("claude_bridge") == "=claude_bridge"
 
 
-def test_t_helper_defaults_to_config_tmux():
+def test_tp_helper_target_pane_format():
+    """target-pane: '=<name>:' (콜론 접미로 pane 해석 강제)."""
+    from bridge import tmux
+    assert tmux._tp("claude_bridge") == "=claude_bridge:"
+
+
+def test_ts_tp_default_to_config_tmux():
     from bridge import tmux, config
-    assert tmux._t() == f"={config.TMUX}:"
+    assert tmux._ts() == f"={config.TMUX}"
+    assert tmux._tp() == f"={config.TMUX}:"
 
 
-def test_t_helper_rejects_prefix_match_sibling():
-    """`=` 접두어가 실제로 prefix-match 를 막는지 형식 수준에서 확인."""
+def test_ts_tp_reject_prefix_match_sibling():
+    """'=' 접두어가 prefix-match 를 막는지 형식 수준에서 확인."""
     from bridge import tmux
-    # sibling 이름 (claude_bridge2) 이 주어져도 literal 그대로 반환되어야 한다.
-    # tmux 는 '=<literal>:' 을 exact 로만 해석하므로 prefix 매치 불가.
-    assert tmux._t("claude_bridge") != "=claude_bridge2:"
-    assert tmux._t("claude_bridge").startswith("=")
-    # 콜론 접미가 붙어야 send-keys/capture-pane (target-pane) 에서도 동작
-    assert tmux._t("claude_bridge").endswith(":")
+    assert tmux._ts("claude_bridge") != "=claude_bridge2"
+    assert tmux._tp("claude_bridge") != "=claude_bridge2:"
+    assert tmux._ts("claude_bridge").startswith("=")
+    assert tmux._tp("claude_bridge").startswith("=")
+    assert tmux._tp("claude_bridge").endswith(":")
 
 
 # ── Bridge.stop() kill-session 인자 검증 ─────────────────────────────────────
@@ -284,17 +290,134 @@ def test_on_message_has_session_uses_exact_match():
 # ── lint-style: bridge/ 전역에서 '-t config.TMUX' 패턴 부재 확인 ─────────────
 
 def test_no_raw_config_tmux_in_minus_t_arguments():
-    """회귀 방지: `-t config.TMUX` 가 bridge/ 소스에 남아있으면 안 된다."""
+    """회귀 방지: `-t config.TMUX` / `-t TMUX` / `-t config.TMUX + ':'` 가
+    bridge/ + bot.py 에 남아있으면 안 된다. 어디 한 군데라도 raw 값을 쓰면
+    prefix-match 로 sibling 세션을 오인한다."""
     import re
-    root = Path(__file__).resolve().parent.parent / "bridge"
-    pattern = re.compile(r'"-t",\s*config\.TMUX')
+    repo = Path(__file__).resolve().parent.parent
+    # 다양한 raw 패턴을 모두 잡는다:
+    #   "-t", config.TMUX      → bridge 내부
+    #   "-t", TMUX             → bot.py 의 top-level import 후 사용 가능성
+    #   "-t", config.TMUX + ":" → pane 지정을 raw 로 한 경우
+    patterns = [
+        re.compile(r'"-t",\s*config\.TMUX(?!\s*[+,)])'),  # raw config.TMUX (단독)
+        re.compile(r'"-t",\s*config\.TMUX\s*\+'),          # raw config.TMUX + ':'
+        re.compile(r'"-t",\s*TMUX(?!\w)'),                 # raw TMUX
+    ]
+    targets: list[Path] = []
+    targets.extend((repo / "bridge").rglob("*.py"))
+    bot_py = repo / "bot.py"
+    if bot_py.exists():
+        targets.append(bot_py)
     hits = []
-    for p in root.rglob("*.py"):
+    for p in targets:
         text = p.read_text(encoding="utf-8")
         for lineno, line in enumerate(text.splitlines(), 1):
-            if pattern.search(line):
-                hits.append(f"{p.name}:{lineno}: {line.strip()}")
-    assert not hits, "raw `-t config.TMUX` 가 남아있음:\n" + "\n".join(hits)
+            for pat in patterns:
+                if pat.search(line):
+                    hits.append(f"{p.name}:{lineno}: {line.strip()}")
+                    break
+    assert not hits, "raw TMUX target 이 남아있음:\n" + "\n".join(hits)
+
+
+# ── bot.py post_init 의 has-session 체크 (Opus 리뷰에서 발견된 누락 지점) ──
+
+def test_bot_post_init_uses_ts_exact_match():
+    """bot.py post_init 의 has-session 인자가 '=' 접두어를 쓴다."""
+    import re
+    bot_py = Path(__file__).resolve().parent.parent / "bot.py"
+    text = bot_py.read_text(encoding="utf-8")
+    # post_init 블록 안에서 has-session 라인 찾기
+    m = re.search(r'has-session.*?\n', text)
+    assert m, "bot.py 에 has-session 호출이 있어야 한다"
+    line = m.group(0)
+    # raw config.TMUX / TMUX 가 아니고, _ts() 를 써야 한다
+    assert "_ts(" in line, f"post_init has-session 이 _ts() 를 쓰지 않음: {line.strip()}"
+    assert "config.TMUX" not in line, f"post_init 에 raw config.TMUX 가 남음: {line.strip()}"
+
+
+# ── is_resume_picker echo guard (scrollback 오인 방지) ───────────────────
+
+def test_is_resume_picker_accepts_live_picker():
+    """divider 없이 끝나는 라이브 피커는 True."""
+    from bridge import parser
+    live = (
+        "Some earlier output\n"
+        "\n"
+        "❯ 1. Resume from summary\n"
+        "  2. Resume full session\n"
+        "\n"
+    )
+    assert parser.is_resume_picker(live) is True
+
+
+def test_is_resume_picker_rejects_echoed_scrollback():
+    """사용자가 텔레그램에 피커 텍스트를 붙여넣어 pane 에 echo 되었지만
+    Claude Code 입력 박스 (─ divider) 가 그 아래에 남아있는 경우 False."""
+    from bridge import parser
+    echoed = (
+        "> Resume from summary ... Resume full session\n"
+        "\n"
+        "─────────────────────────\n"
+        "❯ \n"
+        "─────────────────────────\n"
+    )
+    assert parser.is_resume_picker(echoed) is False
+
+
+def test_is_resume_picker_relaxed_divider_width():
+    """좁은 터미널 (20 미만, 10 이상) divider 도 echo 로 인식한다."""
+    from bridge import parser
+    echoed_narrow = (
+        "Resume from summary … Resume full session\n"
+        "\n"
+        "──────────\n"  # 폭 10
+        "❯ \n"
+        "──────────\n"
+    )
+    assert parser.is_resume_picker(echoed_narrow) is False
+
+
+# ── is_approval 완화된 window (8→15) 검증 ────────────────────────────────
+
+def test_is_approval_accepts_long_diff_preview():
+    """Yes 선택지 위 8줄 초과 (9~15줄 거리) 에 Do you want to proceed 가
+    있는 긴 diff 프리뷰 승인창도 놓치지 않는다."""
+    from bridge import parser
+    lines = [
+        "Do you want to proceed?",   # 0 — Yes 로부터 13줄 위
+        "  diff line 1",
+        "  diff line 2",
+        "  diff line 3",
+        "  diff line 4",
+        "  diff line 5",
+        "  diff line 6",
+        "  diff line 7",
+        "  diff line 8",
+        "  diff line 9",
+        "  diff line 10",
+        "  diff line 11",
+        "",
+        "❯ 1. Yes",                  # 13
+        "  2. No",
+    ]
+    assert parser.is_approval("\n".join(lines)) is True
+
+
+def test_is_approval_rejects_echoed_scrollback():
+    """승인창 텍스트가 pane 에 echo 됐지만 그 아래 입력 박스 divider 가
+    남아있는 경우 False. divider 아래쪽 탐색 guard 를 검증."""
+    from bridge import parser
+    echoed = (
+        "Do you want to proceed?\n"
+        "❯ 1. Yes\n"
+        "  2. No\n"
+        "\n"
+        "─────────────────────────\n"
+        "❯ \n"
+        "─────────────────────────\n"
+    )
+    assert parser.is_approval(echoed) is False
 
 
 if __name__ == "__main__":
