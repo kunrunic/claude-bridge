@@ -79,23 +79,26 @@ def _tmux(rc: int) -> MagicMock:
 
 # ── _t() 헬퍼 ────────────────────────────────────────────────────────────────
 
-def test_t_helper_prefixes_equals_sign_for_explicit_name():
+def test_t_helper_prefixes_equals_and_colon_for_explicit_name():
+    """exact-match('=' 접두) + target-pane 호환('콜론' 접미)."""
     from bridge import tmux
-    assert tmux._t("claude_bridge") == "=claude_bridge"
+    assert tmux._t("claude_bridge") == "=claude_bridge:"
 
 
 def test_t_helper_defaults_to_config_tmux():
     from bridge import tmux, config
-    assert tmux._t() == f"={config.TMUX}"
+    assert tmux._t() == f"={config.TMUX}:"
 
 
 def test_t_helper_rejects_prefix_match_sibling():
     """`=` 접두어가 실제로 prefix-match 를 막는지 형식 수준에서 확인."""
     from bridge import tmux
     # sibling 이름 (claude_bridge2) 이 주어져도 literal 그대로 반환되어야 한다.
-    # tmux 는 '=<literal>' 을 exact 로만 해석하므로 prefix 매치 불가.
-    assert tmux._t("claude_bridge") != "=claude_bridge2"
+    # tmux 는 '=<literal>:' 을 exact 로만 해석하므로 prefix 매치 불가.
+    assert tmux._t("claude_bridge") != "=claude_bridge2:"
     assert tmux._t("claude_bridge").startswith("=")
+    # 콜론 접미가 붙어야 send-keys/capture-pane (target-pane) 에서도 동작
+    assert tmux._t("claude_bridge").endswith(":")
 
 
 # ── Bridge.stop() kill-session 인자 검증 ─────────────────────────────────────
