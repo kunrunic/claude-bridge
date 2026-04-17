@@ -13,6 +13,16 @@ from . import config, dump
 from .config import _log
 
 
+def _t(name: str | None = None) -> str:
+    """tmux target-session 이름을 exact-match('=' 접두어) 로 강제.
+
+    tmux 는 -t <name> 에 exact → prefix → fnmatch 순서로 매칭하므로,
+    'claude_bridge' 가 없을 때 'claude_bridge2' 같은 sibling 세션을
+    prefix 매치로 오인 조작하는 사고를 막기 위해 '=<name>' 을 강제한다.
+    """
+    return f"={name if name is not None else config.TMUX}"
+
+
 def tmux_run(cmd: list[str]) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
@@ -36,14 +46,14 @@ async def tmux_run_async(cmd: list[str]) -> subprocess.CompletedProcess:
 def pane_output() -> str:
     """현재 tmux 패널 내용 반환 (마지막 TMUX_SCROLL_LINES줄)."""
     return tmux_run(
-        ["capture-pane", "-t", config.TMUX, "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
+        ["capture-pane", "-t", _t(), "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
     ).stdout
 
 
 async def pane_output_async() -> str:
     """pane_output 의 비동기 버전."""
     r = await tmux_run_async(
-        ["capture-pane", "-t", config.TMUX, "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
+        ["capture-pane", "-t", _t(), "-p", "-S", f"-{config.TMUX_SCROLL_LINES}"]
     )
     return r.stdout
 
@@ -51,12 +61,12 @@ async def pane_output_async() -> str:
 def send_input(text: str):
     """Claude 에 텍스트 입력 후 Enter (literal 모드로 안전하게)."""
     dump.event("tmux", "send_input", text=text[:500], length=len(text))
-    tmux_run(["send-keys", "-t", config.TMUX, "-l", text])
+    tmux_run(["send-keys", "-t", _t(), "-l", text])
     time.sleep(0.1)
-    tmux_run(["send-keys", "-t", config.TMUX, "Enter"])
+    tmux_run(["send-keys", "-t", _t(), "Enter"])
 
 
 def send_key(key: str):
     """Enter / Down / Escape 등 특수 키 전송."""
     dump.event("tmux", "send_key", key=key)
-    tmux_run(["send-keys", "-t", config.TMUX, key])
+    tmux_run(["send-keys", "-t", _t(), key])

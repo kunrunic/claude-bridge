@@ -51,7 +51,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await config.deny(update); return
     _log("USER→BOT", "/start")
 
-    if tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode == 0:
+    if tmux.tmux_run(["has-session", "-t", tmux._t()]).returncode == 0:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("기존 세션 유지 (재연결)", callback_data="reattach")],
             [InlineKeyboardButton("새로 시작 (기존 종료)", callback_data="force_new")],
@@ -79,7 +79,7 @@ async def cmd_esc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not config.is_allowed(update):
         await config.deny(update); return
     _log("USER→BOT", "/esc")
-    if tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode != 0:
+    if tmux.tmux_run(["has-session", "-t", tmux._t()]).returncode != 0:
         await update.message.reply_text("세션이 없습니다.")
         return
     tmux.send_key("Escape")
@@ -95,7 +95,7 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not config.is_allowed(update):
         await config.deny(update); return
     _log("USER→BOT", "/model")
-    if tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode != 0:
+    if tmux.tmux_run(["has-session", "-t", tmux._t()]).returncode != 0:
         await update.message.reply_text("세션이 없습니다.")
         return
     chat_id = update.effective_chat.id
@@ -154,7 +154,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "force_new":
-        tmux.tmux_run(["kill-session", "-t", config.TMUX])
+        tmux.tmux_run(["kill-session", "-t", tmux._t()])
         sessions = session.find_sessions()
         header = "이어할 세션을 선택하거나 새 세션을 시작하세요:" if sessions else "저장된 세션이 없습니다."
         await q.edit_message_text(header, reply_markup=_build_start_kb(sessions))
@@ -432,7 +432,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not config.is_allowed(update):
         await config.deny(update); return
 
-    session_alive = bridge.running and tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode == 0
+    session_alive = bridge.running and tmux.tmux_run(["has-session", "-t", tmux._t()]).returncode == 0
     if not session_alive:
         await update.message.reply_text("세션이 실행 중이 아닙니다. /start 로 시작하세요.")
         return
