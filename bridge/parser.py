@@ -18,6 +18,11 @@ APPROVAL_RE = re.compile(
     r"Do you want to proceed|"
     r"Allow\s+\w+\s+to|Proceed\?|\(Y/n\)|\(y/N\)"
 )
+# 라이브 승인 박스의 번호 선택지 (` ❯ 1. Yes`).
+_APPROVAL_CHOICE_RE = re.compile(r"^\s*❯?\s*1\.\s+Yes\b", re.MULTILINE)
+# 입력 박스 divider — Claude Code 가 자기 ❯ 입력 프롬프트를 감쌀 때 렌더하는 전폭 ─ 라인.
+# 라이브 승인창은 입력 박스 자리를 대체하므로 `❯ 1. Yes` 아래에 이 라인이 나타나지 않는다.
+_INPUT_DIVIDER_RE = re.compile(r"^\s*─{20,}\s*$")
 # 폴더 신뢰 프롬프트 (새 디렉토리 진입 시 한 번 뜸)
 TRUST_RE = re.compile(
     r"Quick safety check|"
@@ -63,7 +68,27 @@ def is_resume_picker(text: str) -> bool:
 
 
 def is_approval(text: str) -> bool:
-    return bool(APPROVAL_RE.search(text))
+    # 라이브 승인 박스 판정 3단:
+    #   1) tail 에 `❯ 1. Yes` 선택지
+    #   2) Yes 줄 바로 위 ~8줄 안에 `Do you want to …` 프롬프트
+    #   3) Yes 줄 아래에 입력 박스 divider(전폭 ─) 가 **없음** — 승인 박스가
+    #      입력 박스 자리를 대체하기 때문. 텔레그램에 echo 된 scrollback 은
+    #      Claude Code 가 여전히 자기 입력 박스를 렌더해 divider 가 남는다.
+    tail_lines = text.splitlines()[-60:]
+    yes_idx: int | None = None
+    for i in range(len(tail_lines) - 1, -1, -1):
+        if _APPROVAL_CHOICE_RE.search(tail_lines[i]):
+            yes_idx = i
+            break
+    if yes_idx is None:
+        return False
+    window_top = max(0, yes_idx - 8)
+    if not APPROVAL_RE.search("\n".join(tail_lines[window_top : yes_idx + 1])):
+        return False
+    for ln in tail_lines[yes_idx + 1 :]:
+        if _INPUT_DIVIDER_RE.match(ln):
+            return False
+    return True
 
 
 def is_busy(text: str) -> bool:
