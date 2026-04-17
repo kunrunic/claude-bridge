@@ -49,6 +49,7 @@ async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not config.is_allowed(update):
         await config.deny(update); return
+    _log("USER→BOT", "/start")
 
     if tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode == 0:
         kb = InlineKeyboardMarkup([
@@ -68,6 +69,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not config.is_allowed(update):
         await config.deny(update); return
+    _log("USER→BOT", "/end")
     await update.message.reply_text("세션을 종료합니다.")
     await bridge.stop()
 
@@ -76,6 +78,7 @@ async def cmd_esc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """ESC 키 전송 (승인창 취소 / 작업 중단)."""
     if not config.is_allowed(update):
         await config.deny(update); return
+    _log("USER→BOT", "/esc")
     if tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode != 0:
         await update.message.reply_text("세션이 없습니다.")
         return
@@ -91,6 +94,7 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/model 피커 열기 또는 이미 열려있으면 현재 화면 포워딩."""
     if not config.is_allowed(update):
         await config.deny(update); return
+    _log("USER→BOT", "/model")
     if tmux.tmux_run(["has-session", "-t", config.TMUX]).returncode != 0:
         await update.message.reply_text("세션이 없습니다.")
         return
@@ -110,6 +114,7 @@ async def cmd_unlock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """이 인스턴스의 세션 락 강제 해제 (본인 chat_id 소유 락만)."""
     if not config.is_allowed(update):
         await config.deny(update); return
+    _log("USER→BOT", "/unlock")
     my_chat_id = update.effective_chat.id
     locks = session._my_locks()
     if not locks:

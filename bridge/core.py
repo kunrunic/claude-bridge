@@ -156,7 +156,7 @@ class Bridge:
                  f"{log_tag}: {slip} idx={self.queue.idx} cc={len(completed)}")
             dump.event(
                 "core", "queue_slip",
-                tag=log_tag, kind=slip,
+                tag=log_tag, slip_kind=slip,
                 idx=self.queue.idx, cc=len(completed),
                 last_fp=self.queue.last_fp,
             )
@@ -310,6 +310,7 @@ class Bridge:
                     check = await tmux.tmux_run_async(["has-session", "-t", config.TMUX])
                     if check.returncode != 0:
                         if not self.dead_reported:
+                            _log("MONITOR", f"tmux session '{config.TMUX}' gone — exiting")
                             await app.bot.send_message(chat_id, "tmux 세션이 사라졌습니다. /start로 다시 시작하세요.")
                             self.dead_reported = True
                             self.running = False
@@ -317,6 +318,7 @@ class Bridge:
 
                     if not await self.is_alive_async():
                         if not self.dead_reported:
+                            _log("MONITOR", "Claude process dead — exiting")
                             out = await tmux.pane_output_async()
                             clean = parser.strip_ansi(out).strip()
                             await app.bot.send_message(
