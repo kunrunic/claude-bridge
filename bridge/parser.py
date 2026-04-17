@@ -37,6 +37,13 @@ COMPACT_RE = re.compile(r"Compacting conversation|Crunched\s+for\s+\d+", re.IGNO
 CONTEXT_LIMIT_RE = re.compile(r"Context limit reached", re.IGNORECASE)
 # /compact 가 API 에러로 실패한 경우
 COMPACT_ERROR_RE = re.compile(r"Error during compaction", re.IGNORECASE)
+# 긴/오래된 세션 resume 시 뜨는 분기 UI (summary vs full vs suppress).
+# bridge 는 대화형 선택을 못 받으므로 기본값(summary) 으로 자동 Enter 한다.
+RESUME_PICKER_RE = re.compile(
+    r"Resume from summary.*Resume full session|"
+    r"Resuming the full session will consume",
+    re.DOTALL,
+)
 ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
@@ -48,6 +55,11 @@ def strip_ansi(s: str) -> str:
 
 def is_trust_prompt(text: str) -> bool:
     return bool(TRUST_RE.search(text))
+
+
+def is_resume_picker(text: str) -> bool:
+    """긴/오래된 세션 resume 시 summary/full 선택 UI 가 떠 있는지."""
+    return bool(RESUME_PICKER_RE.search(text))
 
 
 def is_approval(text: str) -> bool:

@@ -53,6 +53,7 @@ class Bridge:
         self.last_approval_full: str = ""      # P2-1: pane 전체 내용 (재연결 시 전달용)
         self.queue: StreamQueue = StreamQueue()  # ⏺ 블록 position 커서
         self.trust_ack_pending: bool = False     # 신뢰 프롬프트 auto-ack 상태
+        self.resume_picker_ack_pending: bool = False  # resume summary/full 피커 auto-ack
         self.boot_notified: bool = False         # 부팅 후 사용자에게 최소 1번 이상 전달됐는지
         self.limit_reported: bool = False        # 한도 초과 알림 중복 방지
         self._state_lock = asyncio.Lock()        # P1-4: 상태 직렬화
@@ -268,6 +269,7 @@ class Bridge:
         self.queue.reset()
         self.boot_notified = False
         self.trust_ack_pending = False
+        self.resume_picker_ack_pending = False
         dump.event("core", "monitor_start", chat_id=chat_id, session_id=self.current_session_id)
         dump.start_tick(tmux, parser, self)
         self.dead_reported = False
@@ -341,6 +343,20 @@ class Bridge:
                         continue
                     elif self.trust_ack_pending:
                         self.trust_ack_pending = False
+
+                    # resume summary/full 피커 — 기본값(summary) 으로 자동 Enter
+                    if parser.is_resume_picker(clean):
+                        if not self.resume_picker_ack_pending:
+                            tmux.send_key("Enter")
+                            _log("AUTO-ACK", "resume picker (summary)")
+                            await app.bot.send_message(
+                                chat_id, "Resume 피커 자동 승인 (summary)"
+                            )
+                            self.resume_picker_ack_pending = True
+                        await asyncio.sleep(1)
+                        continue
+                    elif self.resume_picker_ack_pending:
+                        self.resume_picker_ack_pending = False
 
                     # 사용량 한도 초과 감지
                     if parser.LIMIT_RE.search(clean):
