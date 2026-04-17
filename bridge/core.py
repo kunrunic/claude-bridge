@@ -149,6 +149,16 @@ class Bridge:
         if self.awaiting_approval:
             return 0
         completed = self._completed_blocks(clean, include_last=include_last)
+        slip = self.queue.detect_slip(completed)
+        if slip is not None:
+            _log("QUEUE-SLIP",
+                 f"{log_tag}: {slip} idx={self.queue.idx} cc={len(completed)}")
+            dump.event(
+                "core", "queue_slip",
+                tag=log_tag, kind=slip,
+                idx=self.queue.idx, cc=len(completed),
+                last_fp=self.queue.last_fp,
+            )
         new_blocks = self.queue.take_new(completed)
         dump.event(
             "core", "flush_peek",
@@ -157,6 +167,7 @@ class Bridge:
             completed_count=len(completed),
             new_count=len(new_blocks),
             queue_idx=self.queue.idx,
+            slip=slip,
         )
         sent = 0
         for blk in new_blocks:
@@ -176,7 +187,9 @@ class Bridge:
                 dump.event("core", "flush_send_fail", tag=log_tag, error=str(e)[:200])
                 break
         if sent > 0:
-            self.queue.advance(self.queue.idx + sent)
+            last_sent = new_blocks[sent - 1]
+            self.queue.advance_past(completed, last_sent)
+            self.queue.mark_sent(last_sent)
             self.boot_notified = True
         return sent
 
@@ -281,6 +294,7 @@ class Bridge:
             seed_blocks = parser.extract_response_blocks(seed_clean)
             if seed_blocks:
                 self.queue.seed(len(seed_blocks))
+                self.queue.mark_sent(seed_blocks[-1])
                 self.last_hash = hashlib.md5(seed_clean.encode()).hexdigest()
                 _log("BOOT-SEED", f"⏺ 블록 {len(seed_blocks)}개 consumed — queue.idx={self.queue.idx}")
         except asyncio.CancelledError:
