@@ -99,6 +99,13 @@ def is_resume_picker(text: str) -> bool:
 
 
 def is_approval(text: str) -> bool:
+    # busy(`esc to interrupt`) 와 라이브 승인 박스는 상호 배타 — 승인은 tool
+    # 실행 **전** idle 상태에서만 뜬다. tool 이 돌고 있는데 tail 에 `❯ 1. Yes`
+    # 가 잡히면 scrollback 에 남은 직전 승인의 잔재이므로 오탐으로 간주.
+    # (20260420_012453: 승인 직후 busy 전환 중 `is_approval` 이 true 로 남아
+    #  ghost approval 을 재발화 → awaiting_approval wedge 회귀 방지.)
+    if is_busy(text):
+        return False
     # 라이브 승인 박스 판정 3단:
     #   1) tail 에 `❯ 1. Yes` 선택지
     #   2) Yes 줄 바로 위 ~15줄 안에 `Do you want to …` 프롬프트
