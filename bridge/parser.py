@@ -222,8 +222,11 @@ def _response_region(text: str) -> tuple[list[str], int]:
     lines = text.splitlines()
 
     def is_divider(line: str) -> bool:
+        # Claude Code 는 승인 박스 상단에 `╌` (U+254C dashed) divider 를 쓰고,
+        # 입력 박스 / 상태바에는 `─` (solid) 를 쓴다. 둘 다 경계로 인식해야
+        # approval 모달 위의 ⏺ 블록이 response region 에 포함된다.
         s = line.strip()
-        return bool(s) and len(s) > 20 and all(c in "─" for c in s)
+        return bool(s) and len(s) > 20 and all(c in "─╌" for c in s)
 
     end = len(lines)
 
@@ -390,7 +393,7 @@ def _approval_box(text: str) -> str:
     start = max(0, proceed - APPROVAL_SCAN_LINES)
     for i in range(proceed - 1, start - 1, -1):
         s = lines[i].strip()
-        if s and len(s) > 20 and all(c in "─" for c in s):
+        if s and len(s) > 20 and all(c in "─╌" for c in s):
             start = i + 1
             break
     end = min(len(lines), proceed + 6)
