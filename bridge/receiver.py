@@ -84,6 +84,12 @@ async def cmd_esc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     tmux.send_key("Escape")
     _log("USER→AI", "ESC pressed")
+    # /esc 는 사용자가 직접 승인 모달을 닫은 것 — 봇 쪽 대기 상태도 즉시 해제.
+    # 그대로 두면 monitor 가 awaiting_approval=True 분기에서 계속 sleep 하며
+    # Claude 의 post-ESC 응답을 보지 못한다. (20260418_094744)
+    if bridge.awaiting_approval:
+        bridge.awaiting_approval = False
+        _log("USER-ACK", "esc (local approval state cleared)")
     try:
         await update.message.set_reaction("⚡")
     except Exception:

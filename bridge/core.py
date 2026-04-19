@@ -57,6 +57,10 @@ class Bridge:
         self.boot_notified: bool = False         # 부팅 후 사용자에게 최소 1번 이상 전달됐는지
         self.limit_reported: bool = False        # 한도 초과 알림 중복 방지
         self._state_lock = asyncio.Lock()        # P1-4: 상태 직렬화
+        # pipe-pane raw 로그 (Step 1 PoC) — monitor 진입 시 start, 종료 시 stop.
+        # 본 필드는 관찰 데이터 수집용이며 기존 분석 경로에 영향 주지 않는다.
+        self._pipe_log_path: Path | None = None
+        self._pipe_last_size_check: float = 0.0
 
     # -- 세션 관리 ---------------------------------------------------------
 
@@ -121,6 +125,61 @@ class Bridge:
             return "[권한 스킵 ON]  탭하면 OFF"
         return "[권한 확인 ON]  탭하면 스킵"
 
+    # -- pipe-pane raw 로그 (Step 1 PoC) -----------------------------------
+
+    def _new_pipe_log_path(self) -> Path:
+        """세션 attach / rotate 시점마다 새 파일명 생성.
+
+        경로: ~/.claude-bridge/panes/<tmux_session>/raw-<YYYYMMDD_HHMMSS>.log
+        """
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        directory = config.BRIDGE_PIPE_PANE_DIR / config.TMUX
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"raw-{stamp}.log"
+
+    async def _pipe_attach(self) -> None:
+        """monitor 진입 시 raw 로그 수집 시작. 실패는 silent — loop 는 계속."""
+        if not config.BRIDGE_PIPE_PANE_ENABLED:
+            return
+        path = self._new_pipe_log_path()
+        ok = await tmux.start_pipe_pane(str(path))
+        self._pipe_log_path = path if ok else None
+        self._pipe_last_size_check = time.time()
+
+    async def _pipe_detach(self) -> None:
+        """monitor 종료 시 pipe 해제."""
+        if not config.BRIDGE_PIPE_PANE_ENABLED:
+            return
+        try:
+            await tmux.stop_pipe_pane()
+        finally:
+            self._pipe_log_path = None
+
+    async def _pipe_maybe_rotate(self) -> None:
+        """주기적으로 현재 로그 크기 확인 → 20MB 초과 시 새 파일로 교체."""
+        if not config.BRIDGE_PIPE_PANE_ENABLED or self._pipe_log_path is None:
+            return
+        now = time.time()
+        if now - self._pipe_last_size_check < config.BRIDGE_PIPE_PANE_ROTATE_CHECK_SEC:
+            return
+        self._pipe_last_size_check = now
+        try:
+            size = self._pipe_log_path.stat().st_size
+        except OSError:
+            return
+        if size < config.BRIDGE_PIPE_PANE_MAX_BYTES:
+            return
+        old = self._pipe_log_path
+        new_path = self._new_pipe_log_path()
+        ok = await tmux.start_pipe_pane(str(new_path))
+        if ok:
+            self._pipe_log_path = new_path
+            dump.event(
+                "core", "pipe_pane_rotate",
+                from_path=str(old), to_path=str(new_path),
+                old_bytes=size,
+            )
+
     # -- flush 헬퍼 --------------------------------------------------------
 
     def _completed_blocks(self, clean: str, *, include_last: bool) -> list[str]:
@@ -161,6 +220,10 @@ class Bridge:
                 last_fp=self.queue.last_fp,
             )
         new_blocks = self.queue.take_new(completed)
+        if not new_blocks and log_tag == "response":
+            # 응답 구간인데 보낼 블록 0 — stale boundary 오탐 or queue idx
+            # 어긋남 의심. 연속 발생 시 alert 필요. (20260418_094744)
+            _log("FLUSH-EMPTY", f"{log_tag} completed={len(completed)} idx={self.queue.idx}")
         dump.event(
             "core", "flush_peek",
             tag=log_tag,
@@ -169,6 +232,7 @@ class Bridge:
             new_count=len(new_blocks),
             queue_idx=self.queue.idx,
             slip=slip,
+            raw_log_path=(str(self._pipe_log_path) if self._pipe_log_path else None),
         )
         sent = 0
         for blk in new_blocks:
@@ -277,6 +341,7 @@ class Bridge:
         self.resume_picker_ack_pending = False
         dump.event("core", "monitor_start", chat_id=chat_id, session_id=self.current_session_id)
         dump.start_tick(tmux, parser, self)
+        await self._pipe_attach()
         self.dead_reported = False
         self.was_busy = False
         self.status_msg_id: int | None = None
@@ -312,6 +377,8 @@ class Bridge:
         try:
             while self.running:
                 try:
+                    await self._pipe_maybe_rotate()
+
                     check = await tmux.tmux_run_async(["has-session", "-t", tmux._ts()])
                     if check.returncode != 0:
                         if not self.dead_reported:
@@ -669,6 +736,9 @@ class Bridge:
             dump.event("core", "monitor_cancelled")
             dump.stop_tick()
             raise
+        finally:
+            # 정상 종료(running=False break) / cancel 경로 모두 커버.
+            await self._pipe_detach()
 
 
 # 싱글톤 — chat_id 1:1 가정.

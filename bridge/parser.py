@@ -12,10 +12,13 @@ from .config import APPROVAL_SCAN_LINES, BUSY_CHECK_TAIL, COMPACT_SCAN_LINES
 # -- 패턴 --------------------------------------------------------------------
 
 # Claude Code 승인 프롬프트 감지 패턴.
-# "Do you want to proceed" 가 정식 승인창 표식.
-# ❯ 1. Yes 단독은 신뢰 프롬프트와 충돌하므로 사용 X.
+# "Do you want to" 로 시작하는 모든 변형을 매치 (proceed / make this edit / create / run …).
+# 3단 검증 (❯ 1. Yes + 위 15줄 + Yes 아래 divider 부재) 이 이미 strict 라 broad 매치 안전.
+# 같은 파서 내부의 _approval_context (line 344) / _approval_box (line 364) 가 이미 broad 를
+# 쓰고 있어 일관성 회복. 2026-04-19 Edit 다이얼로그 ("Do you want to make this edit to X?")
+# 미검출로 봇이 조용히 stuck 되던 case-04 회귀 방지.
 APPROVAL_RE = re.compile(
-    r"Do you want to proceed|"
+    r"Do you want to\b|"
     r"Allow\s+\w+\s+to|Proceed\?|\(Y/n\)|\(y/N\)"
 )
 # 라이브 승인 박스의 번호 선택지 (` ❯ 1. Yes`).
@@ -224,23 +227,41 @@ def _response_region(text: str) -> tuple[list[str], int]:
 
     end = len(lines)
 
-    # 1) 승인 박스/입력창 경계 감지
-    prompt_idx = -1
-    for i in range(len(lines) - 1, -1, -1):
-        line = lines[i].strip()
-        if "Do you want to proceed" in line or line == "Do you want to":
-            prompt_idx = i
-            break
-    if prompt_idx > 0:
-        for i in range(prompt_idx - 1, max(-1, prompt_idx - 60), -1):
-            if is_divider(lines[i]):
-                end = min(end, i)
+    # 1) 승인 박스 경계 감지 — **라이브 모달** 일 때만.
+    #    ESC 로 닫힌 모달 텍스트가 scrollback 에 남아있어도 응답 영역을
+    #    잘라먹지 않도록 is_approval(text) 로 게이트한다. 추가로 매칭 위치가
+    #    tail 60줄 안에 있어야 유효한 경계로 본다 (is_approval 가 혹시
+    #    false-negative 일 때의 방어선).
+    #    (20260418_094744: /esc 후 응답이 끝까지 forwarding 되지 않던 회귀.
+    #     bc6a015 / 4c20696 에 이은 pane-scrollback 오탐 계열.)
+    if is_approval(text):
+        prompt_idx = -1
+        tail_start = max(0, len(lines) - 60)
+        for i in range(len(lines) - 1, tail_start - 1, -1):
+            line = lines[i].strip()
+            if "Do you want to proceed" in line or line == "Do you want to":
+                prompt_idx = i
                 break
+        if prompt_idx > 0:
+            for i in range(prompt_idx - 1, max(-1, prompt_idx - 60), -1):
+                if is_divider(lines[i]):
+                    end = min(end, i)
+                    break
 
-    # 2) 입력창 divider (마지막 ~15줄)
+    # 2) 입력창 divider (마지막 ~15줄).
+    #    마지막 ⏺ 위에 있는 divider 는 정의상 stale scrollback 잔재 — 후보 제외.
+    #    ⏺ 블록 본문에는 long-divider(─ 20자↑) 가 등장하지 않으므로 last_⏺
+    #    아래만 유효한 입력박스 경계 후보다.
+    #    (20260418_094744: ESC 로 닫힌 모달 하단 divider 가 입력박스 경계로
+    #     오인되어 응답이 통째로 잘려나가던 회귀 방지.)
+    last_response_idx = -1
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].lstrip().startswith("⏺"):
+            last_response_idx = i
+            break
     divider_positions = []
     for i in range(len(lines) - 1, max(-1, len(lines) - 15), -1):
-        if is_divider(lines[i]):
+        if is_divider(lines[i]) and i > last_response_idx:
             divider_positions.append(i)
         # "Welcome back" / "Claude Code v" 는 세션 재시작(restart-in-place) 시
         # 중간에 다시 찍히는 배너일 때만 end 경계로 사용한다.
