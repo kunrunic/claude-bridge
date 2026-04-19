@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -137,22 +138,85 @@ class Bridge:
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"raw-{stamp}.log"
 
+    def _file_identity(self, path: Path) -> dict:
+        """§13.4 File identity — {inode, size, mtime_ns}. stat 실패 시 빈 dict.
+
+        raw 로그는 shell `cat >> path` 가 비동기로 생성하므로 start 직후에는
+        stat 가 OSError 를 낼 수 있다. 그 경우 existed=False 로 기록해 resume 가
+        "원본이 바뀌었나" 를 구별할 수 있게 한다.
+        """
+        try:
+            st = path.stat()
+        except OSError:
+            return {"existed": False, "path": str(path)}
+        return {
+            "existed": True,
+            "path": str(path),
+            "inode": st.st_ino,
+            "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns,
+        }
+
+    def _disk_precheck(self) -> tuple[bool, int]:
+        """§13.4 pre-flight disk check.
+
+        BRIDGE_PIPE_PANE_DIR 의 가용 공간이 MIN_FREE_MB 미만이면 (False, free_mb).
+        디렉토리 미존재 / stat 실패는 통과로 간주 (best-effort).
+        """
+        directory = config.BRIDGE_PIPE_PANE_DIR / config.TMUX
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            usage = shutil.disk_usage(directory)
+        except OSError:
+            return True, -1
+        free_mb = usage.free // (1024 * 1024)
+        return free_mb >= config.BRIDGE_PIPE_PANE_MIN_FREE_MB, free_mb
+
     async def _pipe_attach(self) -> None:
         """monitor 진입 시 raw 로그 수집 시작. 실패는 silent — loop 는 계속."""
         if not config.BRIDGE_PIPE_PANE_ENABLED:
+            return
+        ok_disk, free_mb = self._disk_precheck()
+        if not ok_disk:
+            dump.event(
+                "core", "pipe_pane_disk_precheck_fail",
+                free_mb=free_mb,
+                min_free_mb=config.BRIDGE_PIPE_PANE_MIN_FREE_MB,
+                dir=str(config.BRIDGE_PIPE_PANE_DIR / config.TMUX),
+            )
+            _log(
+                "PIPE-PANE-DISK-LOW",
+                f"free={free_mb}MB < min={config.BRIDGE_PIPE_PANE_MIN_FREE_MB}MB; "
+                f"raw 로그 수집 건너뜀",
+            )
+            self._pipe_log_path = None
+            self._pipe_last_size_check = time.time()
             return
         path = self._new_pipe_log_path()
         ok = await tmux.start_pipe_pane(str(path))
         self._pipe_log_path = path if ok else None
         self._pipe_last_size_check = time.time()
+        if ok:
+            dump.event(
+                "core", "pipe_pane_identity",
+                phase="open",
+                **self._file_identity(path),
+            )
 
     async def _pipe_detach(self) -> None:
         """monitor 종료 시 pipe 해제."""
         if not config.BRIDGE_PIPE_PANE_ENABLED:
             return
+        final_path = self._pipe_log_path
         try:
             await tmux.stop_pipe_pane()
         finally:
+            if final_path is not None:
+                dump.event(
+                    "core", "pipe_pane_identity",
+                    phase="close",
+                    **self._file_identity(final_path),
+                )
             self._pipe_log_path = None
 
     async def _pipe_maybe_rotate(self) -> None:
@@ -169,7 +233,24 @@ class Bridge:
             return
         if size < config.BRIDGE_PIPE_PANE_MAX_BYTES:
             return
+        # §13.4 — rotate 직전에도 disk 재확인. 회전이 가득 찬 디스크로 파일을
+        # 새로 만들면 pipe-pane 이 쓰기 실패로 조용히 죽을 수 있다.
+        ok_disk, free_mb = self._disk_precheck()
+        if not ok_disk:
+            dump.event(
+                "core", "pipe_pane_rotate_skip_disk",
+                free_mb=free_mb,
+                min_free_mb=config.BRIDGE_PIPE_PANE_MIN_FREE_MB,
+                current=str(self._pipe_log_path),
+            )
+            _log(
+                "PIPE-PANE-ROTATE-SKIP",
+                f"free={free_mb}MB < min={config.BRIDGE_PIPE_PANE_MIN_FREE_MB}MB; "
+                f"회전 보류 (현재 파일 계속 사용)",
+            )
+            return
         old = self._pipe_log_path
+        old_identity = self._file_identity(old)
         new_path = self._new_pipe_log_path()
         ok = await tmux.start_pipe_pane(str(new_path))
         if ok:
@@ -178,6 +259,8 @@ class Bridge:
                 "core", "pipe_pane_rotate",
                 from_path=str(old), to_path=str(new_path),
                 old_bytes=size,
+                old_identity=old_identity,
+                new_identity=self._file_identity(new_path),
             )
 
     # -- flush 헬퍼 --------------------------------------------------------

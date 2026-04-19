@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,17 @@ BUSY_CHECK_TAIL     = 20    # busy 감지 꼬리 줄 수
 BUSY_TIMEOUT_SEC    = 600   # busy 최대 지속 시간 — 초과 시 watchdog 발동 (P0)
 BUSY_STUCK_SEC      = 300   # pane 내용 무변화 지속 시 stuck 판정 (P2)
 COMPACT_SCAN_LINES  = 8     # 압축 이벤트 감지 스캔 범위 (현재 활성 영역만)
+
+# -- pipe-pane raw 로그 (Step 1 of pipe-pane redesign PoC) ---------------------
+# docs/plans/20260419-pipe-pane-redesign-poc/ 참조.
+# 관찰 데이터만 수집, 기존 monitor loop 동작은 무변경.
+BRIDGE_PIPE_PANE_ENABLED: bool = os.getenv("BRIDGE_PIPE_PANE", "1") != "0"
+BRIDGE_PIPE_PANE_DIR: Path     = Path.home() / ".claude-bridge" / "panes"
+BRIDGE_PIPE_PANE_MAX_BYTES: int = 20 * 1024 * 1024   # 20MB → rotate
+BRIDGE_PIPE_PANE_ROTATE_CHECK_SEC: float = 30.0      # 크기 체크 최소 간격
+# §13.4 Offset 무결성 safeguard — pre-flight disk check.
+# BRIDGE_PIPE_PANE_DIR 의 가용 공간이 이 값(MB) 미만이면 pipe attach 거부.
+BRIDGE_PIPE_PANE_MIN_FREE_MB: int = int(os.getenv("BRIDGE_PIPE_PANE_MIN_FREE_MB", "500"))
 
 # -- 설정 -----------------------------------------------------------------------
 

@@ -6,6 +6,7 @@ parser 는 이 모듈의 stdout 결과를 받아 해석한다.
 from __future__ import annotations
 
 import asyncio
+import shlex
 import subprocess
 import time
 
@@ -81,3 +82,41 @@ def send_key(key: str):
     """Enter / Down / Escape 등 특수 키 전송."""
     dump.event("tmux", "send_key", key=key)
     tmux_run(["send-keys", "-t", _tp(), key])
+
+
+# -- pipe-pane raw 로그 수집 (Step 1 PoC) -------------------------------------
+# docs/plans/20260419-pipe-pane-redesign-poc/fixes.md 참조.
+# 기존 capture-pane 기반 monitor loop 와 병행. 실패가 loop 를 멈추지 않는다.
+
+async def start_pipe_pane(log_path: str, target: str | None = None) -> bool:
+    """tmux pipe-pane 으로 raw ANSI 스트림을 파일에 append.
+
+    옵션 없이 호출하면 기존 pipe 가 있어도 새 command 로 교체된다 (`man tmux`).
+    Returns True on success, False if disabled or tmux 오류 (loop 는 계속).
+    """
+    if not config.BRIDGE_PIPE_PANE_ENABLED:
+        return False
+    quoted = shlex.quote(log_path)
+    shell_cmd = f"cat >> {quoted}"
+    try:
+        r = await tmux_run_async(
+            ["pipe-pane", "-t", _tp(target), shell_cmd]
+        )
+        if r.returncode == 0:
+            dump.event("tmux", "pipe_pane_start", target=_tp(target), log_path=log_path)
+            return True
+        _log("PIPE-PANE-START-FAIL",
+             f"rc={r.returncode} err={(r.stderr or '')[:200]}")
+        return False
+    except Exception as e:
+        _log("PIPE-PANE-START-ERROR", str(e)[:200])
+        return False
+
+
+async def stop_pipe_pane(target: str | None = None) -> None:
+    """기존 pipe 해제. command 인자 없이 pipe-pane 호출."""
+    try:
+        await tmux_run_async(["pipe-pane", "-t", _tp(target)])
+        dump.event("tmux", "pipe_pane_stop", target=_tp(target))
+    except Exception as e:
+        _log("PIPE-PANE-STOP-ERROR", str(e)[:200])
