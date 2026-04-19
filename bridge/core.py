@@ -28,6 +28,7 @@ from pathlib import Path
 from telegram.ext import Application
 
 from . import config, dump, parser, sender, session, tmux
+from .shadow_analyzer import ShadowAnalyzer
 from .config import (
     BUSY_STREAM_SEC,
     BUSY_STUCK_SEC,
@@ -62,6 +63,9 @@ class Bridge:
         # 본 필드는 관찰 데이터 수집용이며 기존 분석 경로에 영향 주지 않는다.
         self._pipe_log_path: Path | None = None
         self._pipe_last_size_check: float = 0.0
+        # Shadow run 분석기 (Step 4-α). opt-in via BRIDGE_SHADOW_ANALYZER=1.
+        # shadow 모드는 관찰 전용 — Telegram dispatch 경로에 영향 없음.
+        self._shadow: ShadowAnalyzer | None = None
 
     # -- 세션 관리 ---------------------------------------------------------
 
@@ -202,12 +206,14 @@ class Bridge:
                 phase="open",
                 **self._file_identity(path),
             )
+        self._shadow_start(path if ok else None)
 
     async def _pipe_detach(self) -> None:
         """monitor 종료 시 pipe 해제."""
         if not config.BRIDGE_PIPE_PANE_ENABLED:
             return
         final_path = self._pipe_log_path
+        self._shadow_stop()
         try:
             await tmux.stop_pipe_pane()
         finally:
@@ -218,6 +224,48 @@ class Bridge:
                     **self._file_identity(final_path),
                 )
             self._pipe_log_path = None
+
+    # -- Shadow analyzer (Step 4-α) ---------------------------------------
+
+    def _shadow_start(self, current_path: Path | None) -> None:
+        """opt-in shadow run. pipe attach 성공 여부와 무관하게 호출;
+        current_path=None 이면 analyzer 내부에서 no-op 으로 대기."""
+        if not config.BRIDGE_SHADOW_ANALYZER:
+            return
+        try:
+            self._shadow = ShadowAnalyzer(
+                config.TMUX,
+                dump_cb=lambda src, t, payload: dump.event(src, t, **payload),
+            )
+            self._shadow.start(current_path=current_path)
+        except Exception as e:
+            _log("SHADOW-START-ERROR", str(e))
+            self._shadow = None
+
+    def _shadow_stop(self) -> None:
+        if self._shadow is None:
+            return
+        try:
+            self._shadow.stop()
+        except Exception as e:
+            _log("SHADOW-STOP-ERROR", str(e))
+        self._shadow = None
+
+    def _shadow_switch(self, new_path: Path) -> None:
+        if self._shadow is None:
+            return
+        try:
+            self._shadow.switch_file(new_path)
+        except Exception as e:
+            _log("SHADOW-SWITCH-ERROR", str(e))
+
+    async def _shadow_poll(self) -> None:
+        if self._shadow is None:
+            return
+        try:
+            await self._shadow.poll()
+        except Exception as e:
+            _log("SHADOW-POLL-ERROR", str(e))
 
     async def _pipe_maybe_rotate(self) -> None:
         """주기적으로 현재 로그 크기 확인 → 20MB 초과 시 새 파일로 교체."""
@@ -262,6 +310,7 @@ class Bridge:
                 old_identity=old_identity,
                 new_identity=self._file_identity(new_path),
             )
+            self._shadow_switch(new_path)
 
     # -- flush 헬퍼 --------------------------------------------------------
 
@@ -461,6 +510,7 @@ class Bridge:
             while self.running:
                 try:
                     await self._pipe_maybe_rotate()
+                    await self._shadow_poll()
 
                     check = await tmux.tmux_run_async(["has-session", "-t", tmux._ts()])
                     if check.returncode != 0:

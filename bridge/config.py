@@ -33,6 +33,12 @@ BRIDGE_PIPE_PANE_ROTATE_CHECK_SEC: float = 30.0      # 크기 체크 최소 간�
 # BRIDGE_PIPE_PANE_DIR 의 가용 공간이 이 값(MB) 미만이면 pipe attach 거부.
 BRIDGE_PIPE_PANE_MIN_FREE_MB: int = int(os.getenv("BRIDGE_PIPE_PANE_MIN_FREE_MB", "500"))
 
+# -- Shadow run 분석기 (Step 4-α) ---------------------------------------------
+# BRIDGE_SHADOW_ANALYZER=1 로 활성화. 기본 OFF — 의도적으로 opt-in 해야 shadow
+# run 이 시작되도록. 활성화 시 monitor 루프가 pipe-pane raw 를 tail 해
+# analyzer-events.jsonl 에 기록. Telegram dispatch 는 하지 않음 (관찰 전용).
+BRIDGE_SHADOW_ANALYZER: bool = os.getenv("BRIDGE_SHADOW_ANALYZER", "0") == "1"
+
 # -- 설정 -----------------------------------------------------------------------
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.json"
