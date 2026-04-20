@@ -42,6 +42,9 @@ const CHANNEL_NAME = "tg_channel";
 const TRUST_DIALOG_POLL_MS = 200;
 const TRUST_DIALOG_TIMEOUT_MS = 10_000;
 const TRUST_DIALOG_MARKER = "I trust this folder";
+const GRACEFUL_EXIT_WAIT_MS = 5_000;
+const GRACEFUL_EXIT_POLL_MS = 200;
+const TMUX_SESSION_PREFIX = "cb-";
 const BLOCKED_TOOLS = [
   "mcp__plugin_telegram_telegram__reply",
   "mcp__plugin_telegram_telegram__react",
@@ -55,15 +58,86 @@ const ALLOWED_TOOLS = [
   "mcp__tg_channel__download_attachment",
 ];
 
+async function gracefulKillTmux(tmuxName: string): Promise<void> {
+  if (!tmux.hasSession(tmuxName)) return;
+  try {
+    tmux.sendKeys(tmuxName, "/exit", true);
+  } catch {
+    // if send-keys fails, fall through to force kill.
+  }
+  const deadline = Date.now() + GRACEFUL_EXIT_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (!tmux.hasSession(tmuxName)) return;
+    await new Promise((r) => setTimeout(r, GRACEFUL_EXIT_POLL_MS));
+  }
+  try {
+    tmux.killSession(tmuxName);
+  } catch {
+    // already gone or tmux server died — ignore
+  }
+}
+
+/**
+ * Startup orphan reconciliation.
+ *
+ * dispatcher owns every cb-* tmux session. after a crash, two kinds of
+ * drift can occur:
+ *   - stale_registry_entry: registry has a session whose tmux is already gone
+ *   - unknown_tmux: a cb-* tmux exists that registry knows nothing about
+ *     (likely leftover from prior crash — MCP pipe is stranded, unusable)
+ *
+ * we resolve both by making tmux the source of truth and clearing anything
+ * that cannot be reattached. actual /resume continuity lives in Claude's
+ * ~/.claude/projects JSONL, which is independent of tmux lifetime.
+ */
+function reconcileOrphans(registry: Registry): void {
+  for (const s of registry.list()) {
+    if (!tmux.hasSession(s.tmuxName)) {
+      anomaly.log("orphan_detected", {
+        where: "startup",
+        kind: "stale_registry_entry",
+        sessionId: s.id,
+        tmuxName: s.tmuxName,
+      });
+      registry.remove(s.id);
+    }
+  }
+  const known = new Set(registry.list().map((s) => s.tmuxName));
+  for (const name of tmux.listSessions(TMUX_SESSION_PREFIX)) {
+    if (known.has(name)) continue;
+    anomaly.log("orphan_detected", {
+      where: "startup",
+      kind: "unknown_tmux",
+      tmuxName: name,
+    });
+    try {
+      tmux.killSession(name);
+    } catch {
+      // best-effort; if kill fails the next startup will see it again
+    }
+  }
+  // after reconciliation, every live session's MCP pipe is freshly opened
+  // once Claude reconnects. in practice we killed orphans above, so none
+  // should remain attached — but we clear the registry defensively to
+  // surface them via the new-session flow.
+  for (const s of [...registry.list()]) {
+    registry.remove(s.id);
+  }
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const tg = new TelegramClient(config.botToken);
   const registry = new Registry();
   registry.loadFrom(paths.registryPath);
-  registry.setPersistPath(paths.registryPath);
   const socketPath = process.env.CB_DISPATCHER_SOCKET ?? DEFAULT_SOCKET_PATH;
   const botWorkspaceDir = join(paths.workspacesRoot, "bot");
   mkdirSync(botWorkspaceDir, { recursive: true });
+
+  // startup orphan reconciliation — after loadFrom but before setPersistPath
+  // so the cleanup itself is persisted exactly once at the end.
+  reconcileOrphans(registry);
+  registry.setPersistPath(paths.registryPath);
 
   const sockets = new Map<string, LineSocket>();
   const permissionToSession = new Map<string, string>();
@@ -330,20 +404,26 @@ async function main(): Promise<void> {
     await poller.start();
   }
 
-  function shutdown(): void {
+  async function shutdown(): Promise<void> {
     clearInterval(tickTimer);
+    void poller.stop();
+    // graceful exit first — gives Claude a chance to persist ~/.claude/projects
+    // JSONL so /resume still works after restart. keep IPC alive during this
+    // window in case any late tool calls arrive.
+    const kills = registry.list().map((s) => gracefulKillTmux(s.tmuxName));
+    await Promise.all(kills);
     for (const ls of sockets.values()) ls.close();
     ipcServer.close();
-    void poller.stop();
-    for (const s of registry.list()) {
-      tmux.killSession(s.tmuxName);
+    // clear registry so the persisted snapshot reflects "no live sessions"
+    for (const s of [...registry.list()]) {
+      registry.remove(s.id);
     }
     releasePollingLock();
   }
 
-  installShutdownHandlers((reason) => {
+  installShutdownHandlers(async (reason) => {
     anomaly.log("shutdown", { where: "dispatcher.ts", reason });
-    shutdown();
+    await shutdown();
   });
 }
 

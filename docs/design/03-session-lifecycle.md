@@ -229,14 +229,36 @@ spawning → idle ↔ busy
 2. onShutdown 콜백 실행
 3. 2초 대기 후 process.exit(0)
 
-**dispatcher 의 shutdown()** (`dispatcher.ts:368-377`)
-- tickTimer clearInterval
-- 모든 socket 종료
-- ipcServer 종료
-- poller 종료
-- 모든 tmux 세션 kill
+**dispatcher 의 shutdown()** (`dispatcher.ts`)
+
+async 흐름 — Claude 가 `~/.claude/projects` JSONL 을 저장할 수 있도록 graceful
+`/exit` 을 먼저 보낸다:
+
+1. `tickTimer` clearInterval
+2. `poller.stop()`
+3. 각 활성 세션에 `gracefulKillTmux(tmuxName)` 병렬 실행:
+   - `tmux send-keys -t cb-sN /exit Enter`
+   - 최대 5s 동안 200ms 간격으로 `tmux has-session` 폴링
+   - 타임아웃 시 `tmux kill-session` force
+4. 모든 socket 종료
+5. ipcServer 종료
+6. registry 완전 비움 (영구 스냅샷이 "세션 0개" 로 기록)
+7. `releasePollingLock()`
 
 anomaly log: "shutdown" with reason
+
+## Startup Orphan Reconciliation
+
+**reconcileOrphans(registry)** (`dispatcher.ts`)
+
+dispatcher 는 매 startup 시 tmux 를 신뢰원으로 삼아 registry 와 대조:
+
+1. **stale_registry_entry** — registry 에 있는데 `tmux has-session` 실패 → `registry.remove()` (anomaly: orphan_detected, kind: stale_registry_entry)
+2. **unknown_tmux** — `tmux list-sessions` 가 반환한 `cb-*` 중 registry 에 없는 것 → `tmux kill-session` (anomaly: orphan_detected, kind: unknown_tmux). MCP stdio 가 이미 끊긴 상태라 재연결 불가, 정리가 정답.
+3. 정리 후 registry 를 완전히 비움 — 사용자는 `/new` 또는 `/resume` 으로 새로 시작.
+
+`~/.claude/projects/` 의 JSONL 은 tmux 생명주기와 독립이므로 `/resume` 으로
+이전 대화를 이어갈 수 있다.
 
 ## Active Session 추적
 
@@ -262,8 +284,9 @@ s.backlog.push(entry)  // "← hello world", "← /status" 등
 
 ## Known Fragility
 
-- Dev warning 및 trust dialog 자동 확인이 10초 폴링이라 가끔 놓칠 수 있음 (타임아웃 로그 기록) (`dispatcher.ts:171-203`)
-- PPID 체크는 모든 Unix 계열에서 작동하지만, macOS 와 Linux의 ppid 변경 타이밍이 다를 수 있음
+- Trust dialog 자동 확인이 10초 폴링이라 가끔 놓칠 수 있음 (타임아웃 로그 기록)
+- PPID 체크는 모든 Unix 계열에서 작동하지만, macOS 와 Linux 의 ppid 변경 타이밍이 다를 수 있음
+- dispatcher 가 SIGKILL 로 강제 종료되면 graceful `/exit` 이 전송되지 않아 Claude 의 JSONL 이 미저장 상태일 수 있음. 재기동 시 orphan cleanup 이 tmux 는 제거하지만 저장되지 않은 컨텍스트는 복구 불가.
 
 ## 참고
 
