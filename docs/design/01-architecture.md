@@ -7,25 +7,26 @@ MCP stdio 채널 기반, 멀티 세션을 지원하는 Telegram ↔ Claude Code 
 ```
 ┌──────────────┐        ┌────────────────────────────────────┐
 │              │ HTTPS  │  dispatcher.ts (Bun)               │
-│ Telegram     │ long-  │  ├─ Registry (session 추적)        │
-│ Bot API      │ polling│  ├─ IPC server (unix socket)       │
-│              │        │  ├─ Poller (inbound 변환)          │
-└──────────────┘        │  └─ Observer (pane status)         │
+│ Telegram     │ long-  │  ├─ Registry  (active sessions)    │
+│ Bot API      │ polling│  ├─ IPC srv   (unix socket)        │
+│              │        │  ├─ Poller    (inbound convert)    │
+└──────────────┘        │  └─ Observer  (pane status)        │
        │                └──────────────┬─────────────────────┘
-       │                  async call  │ (IPC over unix socket)
-       │                              ▼
+       │                  async call   │  IPC over unix socket
+       │                               ▼
        │        ┌────────────────────────────────────┐
        │        │  MCP stdio server (server.ts)      │
-       │        │  (per Claude Code session)         │
+       │        │  (one per Claude Code session)     │
        │        │  ├─ tools: reply, react, edit...   │
        │        │  └─ notifications: inbound, perm...│
-       │        └──────┬─────────────┬────────────────┘
-       │        publish │             │ subscribe
-       │ Telegram       │ Poller      │
-       │ inbound  ◄─────┘             ▼
+       │        └──────┬─────────────┬───────────────┘
+       │        publish│             │ subscribe
+       │               │             │
+       │ Telegram      │             │
+       │ inbound   ◄───┘             ▼
        │ + polling              Claude Code
-       └─────────────────────► (tmux pane)
-                          capture-pane
+       └─────────────────────►  (tmux pane)
+                                 capture-pane
 ```
 
 ## 세 계층의 분리
