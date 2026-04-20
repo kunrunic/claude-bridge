@@ -107,3 +107,12 @@ bun tests/smoke-spawn.ts   # tmux spawn → IPC hello 왕복 확인
 
 - 2026-04-20 Stage 4 컷오버 — Python pane-parsing bridge 전면 폐기, 본 TS 구현체로 교체
 - 이전 Python 버전 롤백 태그: `pre-python-removal-20260420`, 로컬 백업: `~/bk_claude-bridge2_20260420/`
+
+## 라이선스 · Attribution
+
+MIT License — 자세한 내용은 [LICENSE](LICENSE) 참조.
+
+MCP 채널 프로토콜 표면과 라이프사이클 패턴(PID lock / orphan watchdog 등)은
+[anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
+의 Telegram 플러그인(Apache 2.0) 을 레퍼런스로 삼아 독립 구현했다. 코드 사본은
+포함되어 있지 않다.
