@@ -22,6 +22,10 @@ RAW=0
 SAVE=0
 FOLLOW=0
 TARGET=""
+# default overview 에 각 cb-* pane tail 도 포함 — 세션 이름만 봐서는 진단이
+# 안 되니. --no-panes 로 끌 수 있음. tail 기본 15줄.
+PANES=1
+PANE_TAIL=15
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,14 +34,18 @@ while [ $# -gt 0 ]; do
     --save)     SAVE=1; shift ;;
     -f|--follow) FOLLOW=1; shift ;;
     --session)  TARGET="$2"; shift 2 ;;
+    --no-panes) PANES=0; shift ;;
+    --pane-tail) PANE_TAIL="$2"; shift 2 ;;
     -h|--help)
       cat <<'USAGE'
 usage: ./bin/capture.sh [options]
-  (no args)                show dispatcher status + tmux sessions + recent anomalies
+  (no args)                overview: dispatcher + tmux + registry + 각 pane tail + anomalies
   --session <cb-sN>        capture that tmux pane (last N lines)
-  -n N                     line count for capture (default 500)
+  -n N                     line count for --session capture (default 500)
   --raw                    keep ANSI escape codes
   --save                   save to capture/YYYYMMDD_HHMMSS.txt instead of stdout
+  --no-panes               overview 에서 pane tail 섹션 생략
+  --pane-tail N            overview 각 pane 에 보여줄 tail 줄 수 (default 15)
   -f | --follow --session <name>
                            read-only tmux attach (detach: Ctrl+b then d)
 USAGE
@@ -133,6 +141,21 @@ if [ -f "$REGISTRY_PATH" ]; then
   fi
 else
   echo "  (no registry yet at $REGISTRY_PATH)"
+fi
+
+if [ "$PANES" = "1" ]; then
+  echo
+  echo "── pane tails (last $PANE_TAIL lines each) ──"
+  CB_SESSIONS=$("$TMUX_BIN" list-sessions -F "#{session_name}" 2>/dev/null | grep '^cb-' || true)
+  if [ -z "$CB_SESSIONS" ]; then
+    echo "  (no cb-* sessions to capture)"
+  else
+    for S in $CB_SESSIONS; do
+      echo
+      echo "  ── $S ──"
+      "$TMUX_BIN" capture-pane -t "$S" -p -J -S "-${PANE_TAIL}" 2>/dev/null | sed 's/^/    /' || echo "    (capture failed)"
+    done
+  fi
 fi
 
 echo
