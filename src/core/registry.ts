@@ -93,25 +93,36 @@ export class Registry {
 
   attachSocket(sessionId: string, socketId: string): void {
     const s = this.sessions.get(sessionId);
-    if (s) s.socketId = socketId;
+    if (s) {
+      s.socketId = socketId;
+      this.persist();
+    }
   }
 
   detachSocket(socketId: string): void {
+    let changed = false;
     for (const s of this.sessions.values()) {
       if (s.socketId === socketId) {
         delete s.socketId;
         s.state = "dead";
+        changed = true;
       }
     }
+    if (changed) this.persist();
   }
 
   updateState(id: string, patch: Partial<Session>): void {
     const s = this.sessions.get(id);
     if (!s) return;
+    // persist only when a load-bearing field changes — signal ticks are high-rate
+    // and don't need to hit disk. state transitions (spawning→idle, idle→busy,
+    // →dead) are observability signals that must be recoverable after restart.
+    const persistWorthy =
+      (patch.state !== undefined && patch.state !== s.state) ||
+      (patch.label !== undefined && patch.label !== s.label) ||
+      patch.tmuxName !== undefined;
     Object.assign(s, patch);
-    // runtime-only patches (signal/state transitions from observer tick) do not
-    // need to be persisted on every tick — persistence is for recovery, not
-    // live state. caller can invoke persist() if needed.
+    if (persistWorthy) this.persist();
   }
 
   pushBacklog(id: string, entry: string, cap = 100): void {

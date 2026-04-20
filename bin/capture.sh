@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 CB_HOME="${CB_HOME:-$HOME/.claude-bridge}"
 PID_FILE="$CB_HOME/telegram/bot.pid"
 ANOMALY_LOG="$CB_HOME/anomaly.jsonl"
+REGISTRY_PATH="$CB_HOME/registry.json"
 
 LINES=500
 RAW=0
@@ -111,7 +112,28 @@ fi
 
 echo
 echo "── active tmux sessions (cb-*) ──"
-"$TMUX_BIN" list-sessions -F "  #{session_name}  created=#{session_created_string}  windows=#{session_windows}" 2>/dev/null | grep 'cb-' || echo "  (none)"
+"$TMUX_BIN" list-sessions -F "  #{session_name}  created=#{t:session_created}  windows=#{session_windows}" 2>/dev/null | grep 'cb-' || echo "  (none)"
+
+echo
+echo "── registry state ──"
+if [ -f "$REGISTRY_PATH" ]; then
+  # 우선 bun 기반 JSON pretty parse 를 시도, 없으면 raw cat
+  if command -v bun >/dev/null 2>&1; then
+    bun -e "
+      const r = JSON.parse(require('node:fs').readFileSync('$REGISTRY_PATH','utf-8'));
+      if (!r.sessions.length) { console.log('  (empty)'); process.exit(0); }
+      console.log('  activeId: ' + (r.activeId ?? '(none)'));
+      for (const s of r.sessions) {
+        const marker = (s.id === r.activeId) ? '*' : ' ';
+        console.log('  ' + marker + ' ' + s.id + ' (' + s.label + ')  tmux=' + s.tmuxName + '  state=' + s.state + '  signal=' + s.signal);
+      }
+    " 2>/dev/null || cat "$REGISTRY_PATH"
+  else
+    cat "$REGISTRY_PATH"
+  fi
+else
+  echo "  (no registry yet at $REGISTRY_PATH)"
+fi
 
 echo
 echo "── recent anomalies (last 20) ──"
