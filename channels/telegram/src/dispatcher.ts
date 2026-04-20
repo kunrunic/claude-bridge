@@ -23,6 +23,11 @@ import {
   pendingPermissions,
 } from "./permissions.ts";
 import * as anomaly from "./anomaly.ts";
+import {
+  acquirePollingLock,
+  installShutdownHandlers,
+  releasePollingLock,
+} from "./lifecycle.ts";
 
 const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
@@ -364,6 +369,7 @@ async function main(): Promise<void> {
   }, OBSERVE_TICK_MS);
 
   if (process.env.CB_POLL_DISABLED !== "1") {
+    await acquirePollingLock("dispatcher.ts");
     await poller.start();
   }
 
@@ -375,15 +381,12 @@ async function main(): Promise<void> {
     for (const s of registry.list()) {
       tmux.killSession(s.tmuxName);
     }
+    releasePollingLock();
   }
 
-  process.on("SIGINT", () => {
+  installShutdownHandlers((reason) => {
+    anomaly.log("shutdown", { where: "dispatcher.ts", reason });
     shutdown();
-    process.exit(0);
-  });
-  process.on("SIGTERM", () => {
-    shutdown();
-    process.exit(0);
   });
 }
 

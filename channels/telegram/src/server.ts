@@ -18,6 +18,12 @@ import {
 } from "./permissions.ts";
 import { connectClient, type LineSocket } from "./ipc.ts";
 import * as anomaly from "./anomaly.ts";
+import {
+  acquirePollingLock,
+  installShutdownHandlers,
+  releasePollingLock,
+  startOrphanWatchdog,
+} from "./lifecycle.ts";
 
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const TG_TEXT_LIMIT = 4096;
@@ -352,9 +358,30 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  if (process.env.CB_POLL_DISABLED !== "1" && !ipcMode) {
+  const pollEnabled = process.env.CB_POLL_ENABLED === "1" && !ipcMode;
+  if (pollEnabled) {
+    await acquirePollingLock("server.ts");
     await poller.start();
   }
+
+  installShutdownHandlers(async (reason) => {
+    anomaly.log("shutdown", { where: "server.ts", reason });
+    if (pollEnabled) {
+      try {
+        await poller.stop();
+      } catch {}
+      releasePollingLock();
+    }
+    try {
+      await transport.close();
+    } catch {}
+    if (ipc) ipc.close();
+  });
+
+  startOrphanWatchdog(() => {
+    if (pollEnabled) releasePollingLock();
+    process.exit(0);
+  });
 }
 
 main().catch((err) => {
