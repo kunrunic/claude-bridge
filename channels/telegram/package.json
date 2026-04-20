@@ -1,0 +1,23 @@
+{
+  "name": "@claude-bridge/telegram-channel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "claude-bridge2 — Telegram MCP channel adapter (Bun/TS). Replaces Python pane-parsing bridge.",
+  "type": "module",
+  "module": "src/server.ts",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --hot run src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "grammy": "^1.30.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.0"
+  }
+}

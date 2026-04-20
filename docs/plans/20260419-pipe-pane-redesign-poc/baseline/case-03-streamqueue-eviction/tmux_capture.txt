@@ -1,0 +1,11 @@
+# tmux sessions
+error connecting to /private/tmp/tmux-501/default (No such file or directory)
+(no server)
+
+# claude_bridge2 pane (last 500 lines)
+error connecting to /private/tmp/tmux-501/default (No such file or directory)
+(no session)
+
+# pane dead flag
+error connecting to /private/tmp/tmux-501/default (No such file or directory)
+(no session)
