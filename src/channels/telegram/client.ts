@@ -162,6 +162,41 @@ export class TelegramClient {
     }
   }
 
+  async pinMessage(
+    chatId: string,
+    messageId: number,
+    disableNotification = true,
+  ): Promise<void> {
+    try {
+      await this.bot.api.pinChatMessage(chatId, messageId, {
+        disable_notification: disableNotification,
+      });
+    } catch (err) {
+      anomaly.log("telegram_api_failed", {
+        op: "pinChatMessage",
+        chatId,
+        messageId,
+        error: String(err),
+      });
+      throw err;
+    }
+  }
+
+  async unpinMessage(chatId: string, messageId: number): Promise<void> {
+    try {
+      await this.bot.api.unpinChatMessage(chatId, messageId);
+    } catch (err) {
+      // unpin 실패는 대부분 'message to unpin not found' — pin 이 이미 풀렸거나
+      // 사용자가 수동 해제. 흐름 계속 진행.
+      anomaly.log("telegram_api_failed", {
+        op: "unpinChatMessage",
+        chatId,
+        messageId,
+        error: String(err),
+      });
+    }
+  }
+
   async getFilePath(fileId: string): Promise<string> {
     try {
       const file = await this.bot.api.getFile(fileId);

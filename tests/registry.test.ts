@@ -96,4 +96,23 @@ describe("Registry snapshot round-trip", () => {
     r.remove(b.id);
     expect(r.active()).toBeUndefined();
   });
+
+  test("activePin survives snapshot round-trip and persists on set", () => {
+    const path = tmpFile();
+    const r = new Registry();
+    r.setPersistPath(path);
+    r.create("alpha");
+    r.setActivePin({ chatId: "123", messageId: 4567 });
+    expect(r.getActivePin()).toEqual({ chatId: "123", messageId: 4567 });
+
+    const r2 = new Registry();
+    r2.loadFrom(path);
+    expect(r2.getActivePin()).toEqual({ chatId: "123", messageId: 4567 });
+
+    // clearing pin from a persistent instance should wipe from disk too
+    r.setActivePin(undefined);
+    const r3 = new Registry();
+    r3.loadFrom(path);
+    expect(r3.getActivePin()).toBeUndefined();
+  });
 });

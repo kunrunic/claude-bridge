@@ -266,8 +266,41 @@ async function main(): Promise<void> {
     botWorkspaceDir,
   };
 
-  const spawnSession = (opts: core.SpawnOptions = {}) =>
-    core.spawnSession(
+  // Telegram pin: 현재 active 세션을 chat 상단에 고정. activeId 가 바뀔 때마다
+  // 이전 pin 을 풀고 새 메시지를 pin 한다. defaultChatId 가 없으면 no-op.
+  async function updateActivePin(): Promise<void> {
+    if (!config.defaultChatId) return;
+    const chatId = config.defaultChatId;
+    const active = registry.active();
+    const currentPin = registry.getActivePin();
+
+    if (!active) {
+      if (currentPin) {
+        await tg.unpinMessage(currentPin.chatId, currentPin.messageId).catch(() => {});
+        registry.setActivePin(undefined);
+      }
+      return;
+    }
+
+    const desired = `🧷 active: ${active.id} (${active.label})`;
+    try {
+      const newId = await tg.sendMessage(chatId, desired);
+      await tg.pinMessage(chatId, newId, true);
+      if (currentPin && (currentPin.chatId !== chatId || currentPin.messageId !== newId)) {
+        await tg.unpinMessage(currentPin.chatId, currentPin.messageId).catch(() => {});
+      }
+      registry.setActivePin({ chatId, messageId: newId });
+    } catch (err) {
+      anomaly.log("telegram_api_failed", {
+        op: "updateActivePin",
+        error: String(err),
+      });
+    }
+  }
+
+  const spawnSession = (opts: core.SpawnOptions = {}) => {
+    const beforeActiveId = registry.active()?.id;
+    const r = core.spawnSession(
       {
         registry,
         tmux,
@@ -278,9 +311,20 @@ async function main(): Promise<void> {
       },
       opts,
     );
+    if (registry.active()?.id !== beforeActiveId) {
+      void updateActivePin();
+    }
+    return r;
+  };
 
-  const killSession = (target: string): boolean =>
-    core.killSession({ registry, tmux, sockets }, target);
+  const killSession = (target: string): boolean => {
+    const beforeActiveId = registry.active()?.id;
+    const ok = core.killSession({ registry, tmux, sockets }, target);
+    if (ok && registry.active()?.id !== beforeActiveId) {
+      void updateActivePin();
+    }
+    return ok;
+  };
 
   let pickerCache: SessionInfo[] = [];
 
@@ -324,8 +368,9 @@ async function main(): Promise<void> {
     }
   };
 
-  const handleSlash = (cmd: slash.SlashCommand, _chatId: string): string =>
-    core.handleSlash(
+  const handleSlash = (cmd: slash.SlashCommand, _chatId: string): string => {
+    const beforeActiveId = registry.active()?.id;
+    const reply = core.handleSlash(
       {
         registry,
         spawn: spawnSession,
@@ -336,6 +381,14 @@ async function main(): Promise<void> {
       },
       cmd,
     );
+    // /switch 는 core 내부에서 registry.setActive 를 직접 호출하므로 spawn/kill
+    // wrapper 와 무관하게 여기서 한 번 더 체크. spawn/kill 이 이미 갱신했다면
+    // before/after 가 같아서 no-op.
+    if (registry.active()?.id !== beforeActiveId) {
+      void updateActivePin();
+    }
+    return reply;
+  };
 
   function renderStatus(): string {
     const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -419,9 +472,19 @@ async function main(): Promise<void> {
     await poller.start();
   }
 
+  // startup: reconcileOrphans 가 세션을 다 비웠으므로 이전 세션 기준으로 pin
+  // 돼있는 stale message 를 풀어준다. registry 에 active 가 없으면 unpin 만 수행.
+  void updateActivePin();
+
   async function shutdown(): Promise<void> {
     clearInterval(tickTimer);
     void poller.stop();
+    // unpin active session marker — 다음 기동 때 stale pin 으로 남지 않게
+    const stalePin = registry.getActivePin();
+    if (stalePin) {
+      await tg.unpinMessage(stalePin.chatId, stalePin.messageId).catch(() => {});
+      registry.setActivePin(undefined);
+    }
     // graceful exit first — gives Claude a chance to persist ~/.claude/projects
     // JSONL so /resume still works after restart. keep IPC alive during this
     // window in case any late tool calls arrive.

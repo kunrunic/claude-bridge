@@ -27,6 +27,9 @@ type Snapshot = {
   seq: number;
   activeId?: string;
   sessions: PersistedSession[];
+  // 현재 active session 을 가리키는 telegram pin 메시지 — 재기동 시 stale pin
+  // 제거를 위해 필요. chatId:messageId 형태로 저장.
+  activePin?: { chatId: string; messageId: number };
 };
 
 const SNAPSHOT_VERSION = 1;
@@ -36,6 +39,7 @@ export class Registry {
   private activeId: string | undefined;
   private seq = 0;
   private persistPath: string | undefined;
+  private activePin: { chatId: string; messageId: number } | undefined;
 
   list(): Session[] {
     return [...this.sessions.values()];
@@ -132,6 +136,15 @@ export class Registry {
     if (s.backlog.length > cap) s.backlog.shift();
   }
 
+  getActivePin(): { chatId: string; messageId: number } | undefined {
+    return this.activePin;
+  }
+
+  setActivePin(pin: { chatId: string; messageId: number } | undefined): void {
+    this.activePin = pin;
+    this.persist();
+  }
+
   /** snapshot in plain (JSON-safe) shape. */
   snapshot(): Snapshot {
     const out: Snapshot = {
@@ -146,6 +159,7 @@ export class Registry {
       }),
     };
     if (this.activeId) out.activeId = this.activeId;
+    if (this.activePin) out.activePin = this.activePin;
     return out;
   }
 
@@ -163,6 +177,7 @@ export class Registry {
       this.sessions.set(s.id, s);
     }
     this.activeId = snap.activeId;
+    this.activePin = snap.activePin;
   }
 
   /** load snapshot from disk if file exists. safe to call without file present. */
