@@ -59,6 +59,11 @@ class Bridge:
         self.boot_notified: bool = False         # 부팅 후 사용자에게 최소 1번 이상 전달됐는지
         self.limit_reported: bool = False        # 한도 초과 알림 중복 방지
         self._state_lock = asyncio.Lock()        # P1-4: 상태 직렬화
+        # queue + tmux 입력 원자성 보호 — on_message / on_callback 의 reset·send_input
+        # 시퀀스가 monitor 의 _flush_completed (take_new→await send→advance_past)
+        # 중간에 끼어들면 idx/last_fp 가 불일치해 블록이 stranded 되거나 재전송.
+        # (20260420_072013: msg1→msg2 연속 전송 race 대응.)
+        self._queue_lock = asyncio.Lock()
         # pipe-pane raw 로그 (Step 1 PoC) — monitor 진입 시 start, 종료 시 stop.
         # 본 필드는 관찰 데이터 수집용이며 기존 분석 경로에 영향 주지 않는다.
         self._pipe_log_path: Path | None = None
@@ -335,8 +340,25 @@ class Bridge:
         include_last: bool,
         log_tag: str,
     ) -> int:
+        """_flush_completed_locked 를 _queue_lock 안에서 실행하는 래퍼."""
+        async with self._queue_lock:
+            return await self._flush_completed_locked(
+                app, chat_id, clean,
+                include_last=include_last, log_tag=log_tag,
+            )
+
+    async def _flush_completed_locked(
+        self,
+        app: Application,
+        chat_id: int,
+        clean: str,
+        *,
+        include_last: bool,
+        log_tag: str,
+    ) -> int:
         """완료된 ⏺ 블록 중 아직 큐에서 소비되지 않은 것만 push.
         리턴: 성공적으로 전송된 블록 수.
+        호출자는 `_queue_lock` 을 반드시 잡은 상태여야 한다.
         """
         if self.awaiting_approval:
             return 0
@@ -389,6 +411,37 @@ class Bridge:
             self.queue.mark_sent(last_sent)
             self.boot_notified = True
         return sent
+
+    async def _emergency_flush_before_input(
+        self, app: Application, chat_id: int
+    ) -> bool:
+        """신규 사용자 입력을 Claude 에 주입하기 **직전** 한 번 flush.
+
+        이유: 사용자가 메시지를 빠르게 연속으로 보낼 때, 이전 turn 의 완료 블록이
+        `extract_response_blocks` 의 "마지막 ❯ 앵커" 너머로 밀려 stranded 될 수
+        있다. 새 입력을 주입하기 전에 현재 pane 기준으로 한 번 더 flush 해 두면
+        이 race 창을 최소화한다. (20260420_072013 incident.)
+
+        호출자는 `_queue_lock` 을 잡은 상태에서 호출해야 한다 (wrapper 는 동일 lock
+        을 재귀 시도해 교착 발생).
+
+        반환: flush 시도 성공 True / 예외 False. False 면 호출자는 `queue.reset()`
+        을 건너뛰어 기존 idx/last_fp 를 보존하는 것이 stranded 재발 방지에 안전.
+        """
+        if not self.running or self.task is None or self.task.done():
+            return False
+        try:
+            raw = await tmux.pane_output_async()
+            clean = parser.strip_ansi(raw).strip()
+            await self._flush_completed_locked(
+                app, chat_id, clean,
+                include_last=True, log_tag="emergency-pre-input",
+            )
+            return True
+        except Exception as e:
+            _log("EMERGENCY-FLUSH-FAIL", str(e))
+            dump.event("core", "emergency_flush_fail", error=str(e)[:200])
+            return False
 
     # -- 종료 --------------------------------------------------------------
 

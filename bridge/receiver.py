@@ -186,8 +186,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # 프롬프트 만료, 세션 살아있음 → Claude 에 재요청
             bridge.awaiting_approval = False
             _log("USER-ACK", f"late approved (prompt expired) — context={context}")
-            bridge.queue.reset()
-            tmux.send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
+            async with bridge._queue_lock:
+                bridge.queue.reset()
+                tmux.send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
             try:
                 await q.edit_message_text(
                     f"✅ 승인 · {context}\n프롬프트 만료 — Claude에 재요청했습니다",
@@ -207,8 +208,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     bridge.monitor(ctx.application, q.message.chat_id)
                 )
                 await asyncio.sleep(3)
-                bridge.queue.reset()
-                tmux.send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
+                async with bridge._queue_lock:
+                    bridge.queue.reset()
+                    tmux.send_input(f"사용자가 '{context}' 작업을 승인했습니다. 이어서 진행해주세요.")
                 try:
                     await q.edit_message_text(
                         f"✅ 승인 · {context}\n세션 재시작 후 이어갑니다",
@@ -246,8 +248,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # 프롬프트 만료, 세션 살아있음 → Claude 에 취소 요청
             bridge.awaiting_approval = False
             _log("USER-ACK", f"late denied (prompt expired) — context={context}")
-            bridge.queue.reset()
-            tmux.send_input(f"사용자가 '{context}' 작업을 거부했습니다. 해당 작업을 취소하고 대기해주세요.")
+            async with bridge._queue_lock:
+                bridge.queue.reset()
+                tmux.send_input(f"사용자가 '{context}' 작업을 거부했습니다. 해당 작업을 취소하고 대기해주세요.")
             try:
                 await q.edit_message_text(
                     f"❌ 거부 · {context}\nClaude에 취소 요청했습니다",
@@ -464,9 +467,19 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             payload = f"[텔레그램 이미지 첨부: {fpath}]"
             if caption:
                 payload += f"\n{caption}"
-            # 새 turn 시작 — 이전 turn 에서 소비된 ⏺ 커서를 초기화
-            bridge.queue.reset()
-            tmux.send_input(payload)
+            # emergency flush + reset + send_input 은 원자적으로 실행.
+            # monitor 의 _flush_completed 와 race 하면 idx 불일치 / stranded 발생.
+            async with bridge._queue_lock:
+                flushed_ok = await bridge._emergency_flush_before_input(
+                    ctx.application, update.effective_chat.id
+                )
+                # flush 실패 시 reset 건너뜀 — 기존 idx/last_fp 를 보존해야 아직
+                # 전송 안 된 이전 turn 블록이 stranded 되지 않는다.
+                if flushed_ok:
+                    bridge.queue.reset()
+                else:
+                    _log("EMERGENCY-FLUSH", "skipped reset (flush failed)")
+                tmux.send_input(payload)
             _log("BOT→AI", "forwarded image + caption")
             try:
                 await msg.set_reaction("📷")
@@ -481,9 +494,15 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     preview = caption[:60].replace("\n", " ")
     _log("USER→BOT", preview)
-    # 새 turn 시작 — 이전 turn 에서 소비된 ⏺ 커서를 초기화
-    bridge.queue.reset()
-    tmux.send_input(caption)
+    async with bridge._queue_lock:
+        flushed_ok = await bridge._emergency_flush_before_input(
+            ctx.application, update.effective_chat.id
+        )
+        if flushed_ok:
+            bridge.queue.reset()
+        else:
+            _log("EMERGENCY-FLUSH", "skipped reset (flush failed)")
+        tmux.send_input(caption)
     _log("BOT→AI", "forwarded to Claude (waiting for response)")
     try:
         await msg.set_reaction("✍")

@@ -14,7 +14,10 @@ from telegram import Update
 TMUX_SCROLL_LINES   = 500   # pane 캡처 줄 수 — position-based 큐 가드용 (스크롤백 여유)
 APPROVAL_SCAN_LINES = 30    # 승인 박스 스캔 범위
 SETTLE_TICKS        = 2     # 화면 안정화 틱 수
-BUSY_STREAM_SEC     = 10    # bypass 모드 등 장시간 busy 중 ⏺ 블록 주기적 포워딩 간격
+BUSY_STREAM_SEC     = 3     # bypass 모드 등 장시간 busy 중 ⏺ 블록 주기적 포워딩 간격
+                            # (20260420_072013: 연속 메시지 race 창 감소 — 블록 생성
+                            #  후 최대 지연 10s → 3s. last-❯-anchor 재배치로 이전
+                            #  턴 블록이 stranded 되기 전에 flush 될 확률을 키움.)
 STOP_WAIT_SEC       = 5     # stop() /exit 후 대기 초
 MAX_MSG_CHARS       = 3500  # Telegram 메시지 최대 길이
 BUSY_CHECK_TAIL     = 20    # busy 감지 꼬리 줄 수

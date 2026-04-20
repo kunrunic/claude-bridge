@@ -121,9 +121,14 @@ def event(source: str, kind: str, **fields: Any) -> None:
 
 
 def _trim(text: str, max_chars: int = 2000) -> str:
+    # pane 캡처의 새 블록은 **하단** 에 찍히므로 head 가 아닌 tail 을 남겨야
+    # diagnostic 으로 가치가 있다. head 보존은 세션 부팅 배너 같은 이미 안정된
+    # 구간만 보여줄 뿐, 최근 이벤트·incident 재분석에 블라인드 영역을 만든다.
+    # (20260420_072013: `⏺ 좋은 질문` 블록이 pane_tick 187개 중 한 번도 안 잡혀
+    #  근본원인 분석이 막힌 사건. 원인은 _trim 이 head 8000자만 저장했기 때문.)
     if len(text) <= max_chars:
         return text
-    return text[:max_chars] + f"...[+{len(text) - max_chars} chars]"
+    return f"...[+{len(text) - max_chars} chars]" + text[-max_chars:]
 
 
 def pane_snapshot(raw: str, clean: str, *, busy: bool, awaiting_approval: bool) -> None:
