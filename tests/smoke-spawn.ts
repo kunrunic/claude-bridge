@@ -40,7 +40,7 @@ mkdirSync(botWorkspaceDir, { recursive: true });
 
 tmux.newSession({
   name: sessionName,
-  command: `claude --disallowedTools ${DENY} --allowedTools ${ALLOW} --channels server:tg_channel`,
+  command: `claude --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels --channels server:tg_channel`,
   cwd: botWorkspaceDir,
   env: {
     CB_DISPATCHER_SOCKET: socketPath,
@@ -82,10 +82,41 @@ const pane = tmux.capturePane(sessionName, 40);
 console.log("[smoke] pane tail:\n" + pane);
 console.log("[smoke] received ops:", received.map((m) => m.op));
 
+// happy-path checks:
+//  1) MCP server -> dispatcher hello round-tripped
+//  2) Claude Code accepted channel mode (listening banner present)
+//  3) 'server: entries need --dangerously-load-development-channels' NOT shown
+//     — that banner is the smoking-gun that channel mode is disabled and
+//     inbound notifications would be silently dropped into the void.
+const helloOk = received.find((m) => m.op === "hello") != null;
+const listeningBanner = pane.includes("Listening for channel messages");
+const devChannelsBroken = pane.includes("server: entries need --dangerously-load-development-channels");
+
+console.log("[smoke] hello received:        ", helloOk);
+console.log("[smoke] listening banner:      ", listeningBanner);
+console.log("[smoke] channel mode disabled: ", devChannelsBroken);
+
 tmux.killSession(sessionName);
 server.close();
 try {
   unlinkSync(socketPath);
 } catch {}
 
-process.exit(received.find((m) => m.op === "hello") ? 0 : 1);
+if (!helloOk) {
+  console.error("[smoke] FAIL: dispatcher never received hello");
+  process.exit(1);
+}
+if (!listeningBanner) {
+  console.error("[smoke] FAIL: Claude Code never printed channel listening banner");
+  process.exit(1);
+}
+if (devChannelsBroken) {
+  console.error(
+    "[smoke] FAIL: channel mode disabled — MCP tools connect but inbound " +
+      "notifications are dropped. did you remove --dangerously-load-development-channels?",
+  );
+  process.exit(1);
+}
+
+console.log("[smoke] PASS: spawn → hello → channel listening OK");
+process.exit(0);
