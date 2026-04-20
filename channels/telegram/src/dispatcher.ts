@@ -116,7 +116,6 @@ async function main(): Promise<void> {
         const session = registry.getBySocketId(socketId);
         if (!session) break;
         registry.updateState(session.id, { signal: msg.signal as never });
-        panel.touch();
         break;
       }
       default:
@@ -218,7 +217,6 @@ async function main(): Promise<void> {
     registry.updateState(session.id, { state: "spawning" });
     confirmTrustDialog(session.tmuxName, session.id);
     confirmDevWarning(session.tmuxName, session.id);
-    panel.touch();
     return { id: session.id, label: session.label };
   }
 
@@ -230,7 +228,6 @@ async function main(): Promise<void> {
     const ls = session.socketId ? sockets.get(session.socketId) : undefined;
     ls?.close();
     registry.remove(session.id);
-    panel.touch();
     return true;
   }
 
@@ -263,7 +260,6 @@ async function main(): Promise<void> {
           registry.get(cmd.target) ?? registry.getByLabel(cmd.target);
         if (!s) return `no such session: ${cmd.target}`;
         registry.setActive(s.id);
-        panel.touch();
         const missed = s.backlog.length;
         return `▶ switched to ${s.label}${missed ? ` · ${missed} backlog msg(s)` : ""}`;
       }
