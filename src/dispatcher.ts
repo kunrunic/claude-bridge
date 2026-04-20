@@ -59,6 +59,8 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const tg = new TelegramClient(config.botToken);
   const registry = new Registry();
+  registry.loadFrom(paths.registryPath);
+  registry.setPersistPath(paths.registryPath);
   const socketPath = process.env.CB_DISPATCHER_SOCKET ?? DEFAULT_SOCKET_PATH;
   const botWorkspaceDir = join(paths.workspacesRoot, "bot");
   mkdirSync(botWorkspaceDir, { recursive: true });

@@ -1,4 +1,7 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Signal } from "./observer.ts";
+import * as anomaly from "./anomaly.ts";
 
 export type SessionState = "spawning" | "idle" | "busy" | "error" | "dead";
 
@@ -15,10 +18,24 @@ export type Session = {
   socketId?: string;
 };
 
+type PersistedSession = Omit<Session, "pendingPermissions" | "socketId"> & {
+  pendingPermissions: string[];
+};
+
+type Snapshot = {
+  version: 1;
+  seq: number;
+  activeId?: string;
+  sessions: PersistedSession[];
+};
+
+const SNAPSHOT_VERSION = 1;
+
 export class Registry {
   private sessions = new Map<string, Session>();
   private activeId: string | undefined;
   private seq = 0;
+  private persistPath: string | undefined;
 
   list(): Session[] {
     return [...this.sessions.values()];
@@ -40,13 +57,13 @@ export class Registry {
     return this.activeId ? this.sessions.get(this.activeId) : undefined;
   }
 
-  create(label?: string): Session {
+  create(label?: string, tmuxNameOverride?: string): Session {
     this.seq += 1;
     const id = `s${this.seq}`;
     const session: Session = {
       id,
       label: label ?? id,
-      tmuxName: `cb-${id}`,
+      tmuxName: tmuxNameOverride ?? `cb-${id}`,
       state: "spawning",
       signal: "idle",
       backlog: [],
@@ -54,12 +71,14 @@ export class Registry {
     };
     this.sessions.set(id, session);
     if (!this.activeId) this.activeId = id;
+    this.persist();
     return session;
   }
 
   setActive(id: string): boolean {
     if (!this.sessions.has(id)) return false;
     this.activeId = id;
+    this.persist();
     return true;
   }
 
@@ -69,6 +88,7 @@ export class Registry {
       const next = [...this.sessions.keys()][0];
       this.activeId = next;
     }
+    this.persist();
   }
 
   attachSocket(sessionId: string, socketId: string): void {
@@ -89,6 +109,9 @@ export class Registry {
     const s = this.sessions.get(id);
     if (!s) return;
     Object.assign(s, patch);
+    // runtime-only patches (signal/state transitions from observer tick) do not
+    // need to be persisted on every tick — persistence is for recovery, not
+    // live state. caller can invoke persist() if needed.
   }
 
   pushBacklog(id: string, entry: string, cap = 100): void {
@@ -96,5 +119,78 @@ export class Registry {
     if (!s) return;
     s.backlog.push(entry);
     if (s.backlog.length > cap) s.backlog.shift();
+  }
+
+  /** snapshot in plain (JSON-safe) shape. */
+  snapshot(): Snapshot {
+    const out: Snapshot = {
+      version: SNAPSHOT_VERSION,
+      seq: this.seq,
+      sessions: [...this.sessions.values()].map((s) => {
+        const { pendingPermissions, socketId: _s, ...rest } = s;
+        return {
+          ...rest,
+          pendingPermissions: [...pendingPermissions],
+        } as PersistedSession;
+      }),
+    };
+    if (this.activeId) out.activeId = this.activeId;
+    return out;
+  }
+
+  /** rehydrate from snapshot. socketId and ephemeral perm set are dropped. */
+  loadSnapshot(snap: Snapshot): void {
+    if (snap.version !== SNAPSHOT_VERSION) return;
+    this.sessions.clear();
+    this.seq = snap.seq;
+    for (const ps of snap.sessions) {
+      const { pendingPermissions, ...rest } = ps;
+      const s: Session = {
+        ...rest,
+        pendingPermissions: new Set(pendingPermissions),
+      };
+      this.sessions.set(s.id, s);
+    }
+    this.activeId = snap.activeId;
+  }
+
+  /** load snapshot from disk if file exists. safe to call without file present. */
+  loadFrom(path: string): void {
+    if (!existsSync(path)) return;
+    try {
+      const raw = readFileSync(path, "utf-8");
+      const snap = JSON.parse(raw) as Snapshot;
+      this.loadSnapshot(snap);
+    } catch (err) {
+      anomaly.log("anomaly_self_error", {
+        where: "registry.loadFrom",
+        path,
+        error: String(err),
+      });
+    }
+  }
+
+  /** bind persistence path — subsequent mutations auto-save. */
+  setPersistPath(path: string): void {
+    this.persistPath = path;
+    this.persist();
+  }
+
+  private persist(): void {
+    if (!this.persistPath) return;
+    try {
+      mkdirSync(dirname(this.persistPath), { recursive: true });
+      const tmp = `${this.persistPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(this.snapshot(), null, 2), {
+        encoding: "utf-8",
+      });
+      renameSync(tmp, this.persistPath);
+    } catch (err) {
+      anomaly.log("anomaly_self_error", {
+        where: "registry.persist",
+        path: this.persistPath,
+        error: String(err),
+      });
+    }
   }
 }

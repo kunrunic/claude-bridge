@@ -37,6 +37,7 @@ function fakeTmux(): FakeTmux {
     killSession: (name) => {
       state.killed.push(name);
     },
+    hasSession: (name) => state.spawned.some((s) => s.name === name),
   };
   return state;
 }
@@ -121,6 +122,18 @@ describe("spawnSession", () => {
     };
     spawnSession(deps, { label: "alpha" });
     expect(calls.length).toBe(1);
+  });
+
+  test("tmux name collision triggers random suffix", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    // pre-occupy the name that would otherwise be generated for s1.
+    tmux.spawned.push({ name: "cb-s1" });
+    const r = spawnSession({ registry, tmux, cfg }, { label: "squat" });
+    const s = registry.get(r.id)!;
+    expect(s.tmuxName).not.toBe("cb-s1");
+    expect(s.tmuxName.startsWith("cb-s1-")).toBe(true);
+    expect(tmux.spawned.some((e) => e.name === s.tmuxName)).toBe(true);
   });
 });
 

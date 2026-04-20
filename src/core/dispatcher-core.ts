@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Registry } from "./registry.ts";
 import type { SlashCommand } from "./slash.ts";
 import type { LineSocket } from "./ipc.ts";
@@ -10,6 +11,7 @@ export type TmuxDriver = {
     cwd?: string;
   }) => void;
   killSession: (name: string) => void;
+  hasSession: (name: string) => boolean;
 };
 
 export type SpawnConfig = {
@@ -39,6 +41,15 @@ export function spawnSession(
   opts: SpawnOptions = {},
 ): { id: string; label: string } {
   const session = deps.registry.create(opts.label);
+  // collision avoidance: if another tmux session already owns the default
+  // name (e.g. user-created `cb-s1` or a prior unclean dispatcher crash left
+  // it behind), append a random suffix.
+  if (deps.tmux.hasSession(session.tmuxName)) {
+    const suffix = randomBytes(3).toString("hex");
+    const unique = `${session.tmuxName}-${suffix}`;
+    deps.registry.updateState(session.id, { tmuxName: unique });
+    session.tmuxName = unique;
+  }
   const cwd = opts.cwd ?? deps.cfg.botWorkspaceDir;
   try {
     const denyArg = deps.cfg.blockedTools.join(",");
