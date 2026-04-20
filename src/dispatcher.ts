@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 import { loadConfig } from "./channels/telegram/config.ts";
+import { paths } from "./core/paths.ts";
 import { TelegramClient } from "./channels/telegram/client.ts";
 import { Poller } from "./channels/telegram/poller.ts";
 import { Registry } from "./core/registry.ts";
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const tg = new TelegramClient(config.botToken);
   const registry = new Registry();
   const socketPath = process.env.CB_DISPATCHER_SOCKET ?? DEFAULT_SOCKET_PATH;
-  const botWorkspaceDir = join(homedir(), ".claude-bridge", "workspaces", "bot");
+  const botWorkspaceDir = join(paths.workspacesRoot, "bot");
   mkdirSync(botWorkspaceDir, { recursive: true });
 
   const sockets = new Map<string, LineSocket>();

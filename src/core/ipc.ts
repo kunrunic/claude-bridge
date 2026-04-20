@@ -1,10 +1,10 @@
 import { createServer, createConnection, type Socket, type Server as NetServer } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname } from "node:path";
 import { unlinkSync, existsSync, mkdirSync } from "node:fs";
 import * as anomaly from "./anomaly.ts";
+import { paths } from "./paths.ts";
 
-export const DEFAULT_SOCKET_PATH = join(homedir(), ".claude-bridge", "dispatcher.sock");
+export const DEFAULT_SOCKET_PATH = paths.socketPath;
 
 export type IpcHello = {
   op: "hello";
@@ -104,7 +104,7 @@ export function startServer(
   path: string,
   onConnection: (ls: LineSocket) => void,
 ): NetServer {
-  mkdirSync(join(path, ".."), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) {
     try {
       unlinkSync(path);

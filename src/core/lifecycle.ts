@@ -4,11 +4,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import * as anomaly from "./anomaly.ts";
+import { paths } from "./paths.ts";
 
-const PID_FILE = join(homedir(), ".claude-bridge", "telegram", "bot.pid");
+const PID_FILE = paths.pidFile;
 const ORPHAN_POLL_MS = 5_000;
 const STALE_WAIT_MS = 2_000;
 const FORCE_EXIT_MS = 2_000;

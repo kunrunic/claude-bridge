@@ -6,11 +6,10 @@ import {
   existsSync,
   readFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { paths } from "./paths.ts";
 
-const ROOT = join(homedir(), ".claude-bridge");
-const LOG_PATH = join(ROOT, "anomaly.jsonl");
+const ROOT = paths.home;
+const LOG_PATH = paths.anomalyLog;
 const MAX_BYTES = 5 * 1024 * 1024;
 const KEEP = 3;
 

@@ -1,7 +1,7 @@
 import { chmodSync, readFileSync, existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { z } from "zod";
+import { paths } from "../../core/paths.ts";
 
 const ConfigSchema = z.object({
   botToken: z.string().min(10),
@@ -12,7 +12,7 @@ const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
-const DEFAULT_PATH = join(homedir(), ".claude-bridge", "config.json");
+const DEFAULT_PATH = paths.configPath;
 
 function hardenPermissions(path: string): void {
   try {
