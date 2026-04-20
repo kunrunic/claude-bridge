@@ -6,7 +6,6 @@ import { loadConfig } from "./config.ts";
 import { TelegramClient } from "./telegram/client.ts";
 import { Poller } from "./telegram/poller.ts";
 import { Registry } from "./registry.ts";
-import { StatusPanel } from "./status_panel.ts";
 import * as slash from "./slash.ts";
 import * as tmux from "./tmux/session.ts";
 import { observe } from "./observer.ts";
@@ -25,7 +24,6 @@ import {
 } from "./permissions.ts";
 import * as anomaly from "./anomaly.ts";
 
-const LIVENESS_TICK_MS = 15_000;
 const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
 const DEV_WARNING_POLL_MS = 200;
@@ -49,7 +47,6 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const tg = new TelegramClient(config.botToken);
   const registry = new Registry();
-  const panel = new StatusPanel(tg, registry);
   const socketPath = process.env.CB_DISPATCHER_SOCKET ?? DEFAULT_SOCKET_PATH;
   const botWorkspaceDir = join(homedir(), ".claude-bridge", "workspaces", "bot");
   mkdirSync(botWorkspaceDir, { recursive: true });
@@ -64,7 +61,6 @@ async function main(): Promise<void> {
     ls.onClose(() => {
       sockets.delete(socketId);
       registry.detachSocket(socketId);
-      panel.touch();
     });
   });
 
@@ -85,7 +81,6 @@ async function main(): Promise<void> {
         const s = registry.get(msg.session_id);
         if (s) {
           registry.updateState(msg.session_id, { state: "idle" });
-          panel.touch();
         }
         break;
       }
@@ -314,7 +309,6 @@ async function main(): Promise<void> {
     tg,
     config,
     (evt) => {
-      void panel.ensure(evt.meta.chat_id);
       const slashCmd = slash.parse(evt.content);
       if (slashCmd) {
         const reply = handleSlash(slashCmd, evt.meta.chat_id);
@@ -367,10 +361,7 @@ async function main(): Promise<void> {
       }
       registry.updateState(s.id, patch);
     }
-    panel.touch();
   }, OBSERVE_TICK_MS);
-
-  const livenessTimer = setInterval(() => panel.touch(), LIVENESS_TICK_MS);
 
   if (process.env.CB_POLL_DISABLED !== "1") {
     await poller.start();
@@ -378,7 +369,6 @@ async function main(): Promise<void> {
 
   function shutdown(): void {
     clearInterval(tickTimer);
-    clearInterval(livenessTimer);
     for (const ls of sockets.values()) ls.close();
     ipcServer.close();
     void poller.stop();
