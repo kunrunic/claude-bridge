@@ -120,8 +120,12 @@ EOF
 chmod 600 "$CONFIG_PATH"
 
 # 10. user-scope MCP 등록 — cwd 무관하게 tg_channel 을 찾게 하기 위함
+# NOTE: `claude mcp get` 은 project/local/user scope 를 모두 찾아서 성공을 반환한다.
+# 프로젝트 scope (.mcp.json) 로 등록되어 있으면 cwd 가 claude-bridge2 밖일 때 안
+# 보이므로, user scope 에 있는지 명시적으로 확인해야 한다. /tmp 에서 실행해서
+# 프로젝트 scope 를 배제한 뒤, 여전히 보이면 user (또는 local) scope 에 있는 것.
 SERVER_ABS="$(cd "$(dirname "$0")/.." && pwd)/src/channels/telegram/server.ts"
-if claude mcp get tg_channel >/dev/null 2>&1; then
+if ( cd /tmp && claude mcp get tg_channel ) >/dev/null 2>&1; then
   echo "✓ tg_channel 이미 user scope 에 등록됨 (skip)"
 else
   echo
