@@ -61,7 +61,7 @@ export function spawnSession(
       name: session.tmuxName,
       command:
         `claude --disallowedTools ${denyArg} --allowedTools ${allowArg}${resumeArgs} ` +
-        `--dangerously-load-development-channels --channels server:${deps.cfg.channelName}`,
+        `--dangerously-load-development-channels server:${deps.cfg.channelName}`,
       cwd,
       env: {
         CB_DISPATCHER_SOCKET: deps.cfg.socketPath,

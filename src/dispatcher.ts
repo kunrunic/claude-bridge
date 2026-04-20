@@ -39,9 +39,10 @@ import { existsSync } from "node:fs";
 
 const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
-const TRUST_DIALOG_POLL_MS = 200;
-const TRUST_DIALOG_TIMEOUT_MS = 10_000;
+const DIALOG_POLL_MS = 200;
+const DIALOG_TIMEOUT_MS = 15_000;
 const TRUST_DIALOG_MARKER = "I trust this folder";
+const DEV_CHANNEL_WARNING_MARKER = "Loading development channels";
 const GRACEFUL_EXIT_WAIT_MS = 5_000;
 const GRACEFUL_EXIT_POLL_MS = 200;
 const TMUX_SESSION_PREFIX = "cb-";
@@ -224,23 +225,37 @@ async function main(): Promise<void> {
     ls.send({ op: "permission_reply", request_id: requestId, behavior });
   }
 
-  function confirmTrustDialog(tmuxName: string, sessionId: string): void {
-    const deadline = Date.now() + TRUST_DIALOG_TIMEOUT_MS;
+  // Dismiss up to two startup modals:
+  //   1) "I trust this folder" — only on first visit to the cwd
+  //   2) "Loading development channels" — ALWAYS when --dangerously-load-development-channels is used
+  // Both dismiss with a single Enter. We poll the pane for each marker and send
+  // Enter as it appears. Trust dialog is optional; dev warning is expected on
+  // every spawn until a channel is promoted to a plugin install.
+  function confirmStartupDialogs(tmuxName: string, sessionId: string): void {
+    const deadline = Date.now() + DIALOG_TIMEOUT_MS;
+    const dismissed = { trust: false, devWarn: false };
     const poll = (): void => {
       if (Date.now() > deadline) return;
       let pane = "";
       try { pane = tmux.capturePane(tmuxName, 40); } catch {
-        setTimeout(poll, TRUST_DIALOG_POLL_MS); return;
+        setTimeout(poll, DIALOG_POLL_MS); return;
       }
-      if (pane.includes(TRUST_DIALOG_MARKER)) {
-        try { tmux.sendKeys(tmuxName, "", true); } catch (err) {
+      if (!dismissed.trust && pane.includes(TRUST_DIALOG_MARKER)) {
+        try { tmux.sendKeys(tmuxName, "", true); dismissed.trust = true; } catch (err) {
           anomaly.log("session_spawn_failed", { op: "trust-dialog-confirm", session: sessionId, error: String(err) });
         }
-        return;
       }
-      setTimeout(poll, TRUST_DIALOG_POLL_MS);
+      if (!dismissed.devWarn && pane.includes(DEV_CHANNEL_WARNING_MARKER)) {
+        try { tmux.sendKeys(tmuxName, "", true); dismissed.devWarn = true; } catch (err) {
+          anomaly.log("session_spawn_failed", { op: "dev-warning-confirm", session: sessionId, error: String(err) });
+        }
+      }
+      // dev warning is the one that ALWAYS appears with our flag set; once
+      // dismissed we're done. trust is best-effort.
+      if (dismissed.devWarn) return;
+      setTimeout(poll, DIALOG_POLL_MS);
     };
-    setTimeout(poll, TRUST_DIALOG_POLL_MS);
+    setTimeout(poll, DIALOG_POLL_MS);
   }
 
   const spawnCfg: core.SpawnConfig = {
@@ -258,7 +273,7 @@ async function main(): Promise<void> {
         tmux,
         cfg: spawnCfg,
         onSpawned: (tmuxName, sessionId) => {
-          confirmTrustDialog(tmuxName, sessionId);
+          confirmStartupDialogs(tmuxName, sessionId);
         },
       },
       opts,
