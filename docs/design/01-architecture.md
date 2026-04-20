@@ -31,7 +31,7 @@ MCP stdio 채널 기반, 멀티 세션을 지원하는 Telegram ↔ Claude Code 
 
 ## 세 계층의 분리
 
-**Telegram 채널 무관 핵심 로직** (`src/core/`)
+**공용 핵심 로직** (`src/core/`)
 - `dispatcher-core.ts` — spawnSession, killSession, handleSlash 순수 함수
 - `registry.ts` — active session 추적, 상태 저장
 - `slash.ts` — 커맨드 파싱 및 BOT_COMMANDS 목록
