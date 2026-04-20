@@ -22,10 +22,9 @@
 
 ## 현재 진행 / 완료
 
-| 폴더 | 상태 | 요지 |
-|------|------|------|
-| [20260418-esc-flush-recovery/](20260418-esc-flush-recovery/README.md) | 진행 | ESC flush 회귀 3-에이전트 교차 리뷰 (architect / senior / streaming) |
-| [20260415-initial-review/](20260415-initial-review/SUMMARY.md) | 완료 | 초기 설계·개발·네트워크·QA·Telegram·UX 6관점 긍정·비판 |
+(MCP 체제 전환 후 신규 리뷰 미작성)
+
+Python pane-parsing 시대의 리뷰 폴더들(20260415-initial-review, 20260418-esc-flush-recovery, 20260419-step-3-design)은 태그 `pre-python-removal-20260420` 시점에서 조회할 수 있다.
 
 ## 리뷰 수행 패턴 (이번 20260418 참고)
 

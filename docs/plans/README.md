@@ -30,9 +30,9 @@
 
 | 폴더 | 상태 | 요지 |
 |------|------|------|
-| [20260419-pipe-pane-redesign-poc/](20260419-pipe-pane-redesign-poc/README.md) | 설계 | pipe-pane 생로그 + 이벤트 기반 스트리밍 재설계 PoC. Step 3 결정 게이트 |
-| [20260418-esc-flush-recovery/](20260418-esc-flush-recovery/README.md) | 진행 | ESC 이후 Telegram flush 봉쇄 회귀. Fix 1/2/3 핫픽스 |
-| [20260415-initial-plan/plan.md](20260415-initial-plan/plan.md) | 완료 | 초기 설계 리뷰 반영 개선 계획 |
+| [20260420-mcp-channel-adapter/](20260420-mcp-channel-adapter/README.md) | 완료 | Python pane-parsing → Bun/TS MCP 채널 어댑터 전환 (Stage 4 컷오버) |
+
+Python pane-parsing 시대의 계획 폴더들(20260415-initial-plan, 20260418-esc-flush-recovery, 20260419-pipe-pane-redesign-poc)은 태그 `pre-python-removal-20260420` 시점에서 조회할 수 있다.
 
 ## 참고
 

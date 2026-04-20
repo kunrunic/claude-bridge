@@ -32,19 +32,12 @@ bugreport/  →  reviews/<date>-<topic>/  →  plans/<date>-<topic>/  →  코�
 
 ## 현재 작업
 
-- **2026-04-20 MCP 채널 어댑터 전환** (방향성 확정, 구현 미착수)
+- **2026-04-20 MCP 채널 어댑터 전환** (Stage 4 완료, 본 저장소 현행 구현)
   - 계획: [plans/20260420-mcp-channel-adapter/](plans/20260420-mcp-channel-adapter/README.md)
-  - 트리거: `dump/20260420/123305_claude-bridge2/` — transient 앵커 stranding
-- **2026-04-18 ESC flush recovery**
-  - 리뷰: [reviews/20260418-esc-flush-recovery/](reviews/20260418-esc-flush-recovery/README.md)
-  - 계획: [plans/20260418-esc-flush-recovery/](plans/20260418-esc-flush-recovery/README.md)
-  - 원 리포트: [bugreport/20260418_094744/BUG_REPORT.md](../bugreport/20260418_094744/BUG_REPORT.md)
 
-## 이전 작업
+## 이전 이력
 
-- **2026-04-15 초기 리뷰 + 계획**
-  - 리뷰: [reviews/20260415-initial-review/](reviews/20260415-initial-review/SUMMARY.md)
-  - 계획: [plans/20260415-initial-plan/plan.md](plans/20260415-initial-plan/plan.md)
+Python pane-parsing 시대의 계획·리뷰·설계 문서는 태그 [`pre-python-removal-20260420`](https://github.com/kunrunic/claude-bridge/tree/pre-python-removal-20260420) 시점에서 조회할 수 있다. MCP 전환 이후 main 에서는 제거되었다.
 
 ## 규칙
 

@@ -1,130 +1,268 @@
-# 06. 관측성 (로그, dump)
+# 06. 관측성 (Observability)
 
-봇이 "무엇을 했는지" 를 재구성하는 두 채널이 있다: **포그라운드 로그**(기본)와 **dump**(옵트인).
+Always-on JSONL anomaly 로거, 구조화 로그 태그 체계, 테스트 레이아웃, CI 파이프라인.
 
-## 포그라운드 로그
+## Anomaly 로거 (Always-On)
 
-`bridge/config.py:52-58` 의 `_log(tag, msg)`:
+**파일**: `~/.claude-bridge/anomaly.jsonl`
 
-```python
-def _log(tag: str, msg: str = ""):
-    ts = time.strftime("%H:%M:%S")
-    print(f"[{ts}] [{tag}] {msg}" if msg else f"[{ts}] [{tag}]")
+각 라인은 JSON 레코드. 타임스탬프, anomaly kind, 컨텍스트 정보 포함.
+
+### log() 함수
+
+**위치** (`anomaly.ts:51-64`)
+
+```typescript
+function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void
 ```
 
-형식: `[HH:MM:SS] [TAG] msg`. `start.sh` 가 stdout 을 `logs/<date>.log` 로 파이프한다(bugreport/logs/ 참고).
+**동작**:
+1. `~/.claude-bridge/` 디렉토리 생성 (없으면)
+2. rotateIfNeeded() — 파일 크기 체크
+3. JSON 레코드 추가:
+   ```json
+   {
+     "ts": "2026-04-20T10:30:45.123Z",
+     "kind": "channel_reply_failed",
+     "op": "dispatcher.announce",
+     "error": "Network timeout"
+   }
+   ```
 
-### 주요 태그
+**설계**: 관측성 실패가 봇 로직을 중단하면 안 되므로 모든 예외를 silent catch (`anomaly.ts:61-63`)
 
-| 태그 | 위치 | 의미 |
-|------|------|------|
-| `BOOT` | bot.py:179 | 봇 시작 |
-| `SHUTDOWN` / `POLLING-ERROR` / `POLLING-RETRY` / `POLLING-FATAL` | bot.py:182-190 | Telegram 폴링 재연결 상태 |
-| `USER→BOT` | receiver.py 전역 | 사용자 메시지/명령 수신 |
-| `BOT→AI` | receiver.py:464,481 | 사용자 입력을 Claude 로 포워드 |
-| `USER→AI` | receiver.py:86, 106-109 | 키/명령 주입 (ESC, /model …) |
-| `USER-ACK` | receiver.py:172, 182, … | 승인/거부 버튼 처리 결과 |
-| `AI-APPROVAL` | core.py:449 | 승인 박스 감지 (도구명 포함) |
-| `AI-BUSY` | core.py:490 | busy 진입 (상태 라벨 포함) |
-| `AI→BOT` | core.py:175, 635 | 블록 송출 준비 |
-| `BOT→USER` | core.py:184, 638 | Telegram 전송 성공 |
-| `QUEUE-SLIP` | core.py:155 | StreamQueue slip 감지 |
-| `AI-CTX-LIMIT` / `AI-COMPACT` / `AI-COMPACT-ERR` / `AI-COMPACT-NOSEND` | core.py 여러 곳 | 컨텍스트/압축 이벤트 |
-| `AI-WATCHDOG` | core.py:229 | busy timeout/stuck 트리거 |
-| `AI-LIMIT` | core.py:382 | 사용량 한도 도달 |
-| `MONITOR` / `MONITOR-ERROR` | core.py 전역 | monitor 생명주기/예외 |
-| `AUTO-ACK` | core.py:346, 358 | 자동 Enter (trust/resume picker) |
-| `BOOT-SEED` | core.py:306 | 부팅 시 queue seed |
-| `FLUSH-SEND-FAIL` / `SEND-HTML-FAIL` / `SEND-PLAIN-FAIL` | core.py:187, sender.py:55-61 | 전송 실패 |
-| `LOCK-ERROR` / `LOCK-RELEASE-ERROR` / `UNLOCK` / `MY-LOCKS-ERROR` | session.py | 인스턴스 락 |
-| `TMUX-TIMEOUT` | tmux.py:44 | tmux subprocess 5초 초과 |
-| `STATUS-MSG-ERR` | core.py:496 | Telegram 상태 메시지 편집 실패 |
+### AnomalyKind 열거
 
-### 로그 기반 증상 분류법
+**정의** (`anomaly.ts:34-49`)
 
-- `USER→BOT` 대비 `BOT→USER` 카운트가 극단적으로 낮다 → flush 경로 장애 (이번 ESC flush 회귀 패턴).
-- `AI-BUSY` edge 가 반복되는데 `AI→BOT` 가 없다 → 응답은 생성됐지만 큐/경계 문제로 추출 실패.
-- `QUEUE-SLIP` 이 계속 찍힌다 → scrollback eviction 이 계속 발생 (대량 출력 세션).
-- `MONITOR-ERROR` 5회 → 사용자 알림, 10회 → monitor 종료 (`core.py:652-663`).
+| 종류 | 의미 |
+|------|------|
+| `channel_reply_failed` | Telegram API 송신 실패 |
+| `permission_timeout` | 권한 요청 타임아웃 (현재 미사용) |
+| `session_spawn_failed` | tmux new-session 또는 Claude Code 시작 실패 |
+| `inbound_no_active_session` | 인바운드 메시지 but 활성 세션 없음 |
+| `busy_timeout` | 세션이 너무 오래 busy (현재 미사용) |
+| `compact_error` | Claude Code 압축 실패 |
+| `mcp_unknown_method` | IPC 메시지 op 미인식 |
+| `status_panel_edit_failed` | status 디스플레이 편집 실패 |
+| `telegram_api_failed` | Telegram API 오류 (시작, 폴링 등) |
+| `tmux_capture_failed` | tmux capture-pane 또는 send-keys 실패 |
+| `token_collision_detected` | 같은 토큰으로 다른 인스턴스 폴링 |
+| `anomaly_self_error` | 관측 시스템 자체 오류 |
+| `shutdown` | 정상 종료 |
+| `stale_instance_evicted` | 중복 인스턴스 제거 |
+| `orphan_detected` | 부모 프로세스 사라짐 감지 |
 
-## dump (`CB_DUMP=1`)
+### 로그 로테이션
 
-`bridge/dump.py`. env 로 켜지는 구조화된 증거 채널. 꺼져있으면 모든 함수 no-op.
+**rotateIfNeeded()** (`anomaly.ts:17-32`)
 
-### 디렉토리 구조
-
+파일 크기 5MB 초과 시:
 ```
-dump/
- └─ YYYYMMDD/
-     └─ HHMMSS_<instance>/
-        ├─ pane_tick.jsonl    # 0.5s 주기 pane 캡처 (hash dedup)
-        └─ events.jsonl       # 각 컴포넌트의 이벤트
+anomaly.jsonl        → anomaly.jsonl.1
+anomaly.jsonl.1      → anomaly.jsonl.2
+anomaly.jsonl.2      → anomaly.jsonl.3
+anomaly.jsonl.3 삭제 (KEEP=3)
 ```
 
-보관 3일(`_RETENTION_DAYS=3`), 부팅 시 오래된 디렉토리 자동 삭제 (`dump.py:68-82`).
+최대 3개 파일 유지 (15MB 최대).
 
-### `pane_tick.jsonl`
+### summary()
 
-`dump.py:129-149` `pane_snapshot`. 레코드:
+**위치** (`anomaly.ts:66-98`)
 
+```typescript
+function summary(windowMs: number): {
+  total: number;
+  byKind: Map<string, number>;
+  lastTs: Map<string, string>;
+}
+```
+
+**용도**: `/status` 커맨드에서 24시간 이내 anomaly 집계.
+
+**윈도우**: windowMs만큼 이전 기록만 카운트 (`dispatcher.ts:287`)
+```typescript
+const WINDOW_MS = 24 * 60 * 60 * 1000;
+const s = anomaly.summary(WINDOW_MS);
+```
+
+**응답 포맷** (`dispatcher.ts:289-302`)
+```
+📊 24h anomalies: 5
+  channel_reply_failed: 2  (last 10:30:45)
+⚠️ token_collision_detected: 1  (last 09:15:22)
+log: /Users/user/.claude-bridge/anomaly.jsonl
+```
+
+## 로깅 위치별 정리
+
+### Dispatcher
+
+**anomaly 발생**:
+- `channel_reply_failed` — 봇 공지 송신 실패 (`dispatcher.ts:83`)
+- `inbound_no_active_session` — 활성 세션 없을 때 inbound (`dispatcher.ts:318-320`)
+- `mcp_unknown_method` — IPC op 미인식 (`dispatcher.ts:130-133`)
+- `shutdown` — graceful shutdown 로그 (`dispatcher.ts:380`)
+- `stale_instance_evicted` — PID lock에서 중복 제거 (`dispatcher.ts:44`, lifecycle.ts 호출)
+
+### MCP Server
+
+**anomaly 발생**:
+- `channel_reply_failed` — permission 알림 송신 실패 (`server.ts:149`)
+- `channel_reply_failed` — inbound 알림 송신 실패 (`server.ts:164`)
+- `mcp_unknown_method` — IPC op 미인식 (`server.ts:184`)
+- `anomaly_self_error` — IPC 파싱 오류 (`server.ts:191`)
+- `session_spawn_failed` — dev warning / trust dialog 타임아웃 또는 confirm 실패 (`dispatcher.ts:162, 175, 193`)
+
+### Poller
+
+**anomaly 발생**:
+- `telegram_api_failed` — bot.start() 폴링 오류 (`poller.ts:159`)
+- `token_collision_detected` — 409 Conflict 반복 (`poller.ts:72`)
+- `inbound_no_active_session` — permission reply 권한 부족 (`poller.ts:102`)
+
+### IPC
+
+**anomaly 발생**:
+- `anomaly_self_error` — send() 오류 (`ipc.ts:63`)
+- `anomaly_self_error` — parse 오류 (`ipc.ts:83`)
+
+### Registry & Config
+
+**anomaly 발생**:
+- `anomaly_self_error` — sessions.findSessions 읽기 오류 (`sessions.ts:84`)
+
+### Tmux
+
+**anomaly 발생**:
+- `session_spawn_failed` — new-session 실패 (`session.ts:39`)
+- `tmux_capture_failed` — capture-pane 또는 send-keys 실패 (`session.ts:51, 65`)
+
+### Lifecycle
+
+**anomaly 발생**:
+- `stale_instance_evicted` — 중복 인스턴스 강제 종료 (`lifecycle.ts:44`)
+- `orphan_detected` — 부모 프로세스 사라짐 (`lifecycle.ts:89, 95`)
+
+## 테스트 구조
+
+**위치**: `tests/`
+
+### Unit 테스트
+
+- `unit/dispatcher-core.ts` — handleSlash, spawnSession, killSession 순수 함수
+- `unit/slash.ts` — slash 파싱
+- `unit/observer.ts` — pane signal 감지
+
+**실행**:
+```bash
+bun test tests/unit/
+```
+
+### Integration 테스트
+
+- `smoke-spawn.ts` — dispatcher 실행 → 세션 spawn → hello 메시지 확인
+- `smoke-reply.ts` — reply 도구 호출 확인
+- `smoke-permission.ts` — 권한 요청 흐름
+- `smoke-mcp-stdio.ts` — MCP server stdio 통신
+
+**실행**:
+```bash
+bun test tests/
+```
+
+### 배포 전 필수 체크
+
+**happy-path smoke test** (`memory/MEMORY.md` 명시)
+
+```bash
+bun tests/smoke-spawn.ts
+```
+
+세션 spawn → "hello" 메시지 왕복 확인.
+
+## CI 파이프라인
+
+**파일**: `.github/workflows/ci.yml`
+
+### 단계
+
+1. **checkout** — 코드 다운로드
+2. **setup** — Bun 설치
+3. **install** — `bun install`
+4. **typecheck** — `bun run typecheck` (TypeScript)
+5. **test** — `bun test` (모든 테스트)
+6. **smoke test** (선택) — 배포 전 smoke-spawn 실행
+
+### 사양
+
+- Node.js (via Bun) — 최신 버전
+- timeout — 각 단계 30분 이내
+
+## Anomaly 분석 도구
+
+**로그 읽기**:
+```bash
+tail -f ~/.claude-bridge/anomaly.jsonl | jq '.'
+```
+
+**특정 kind 필터**:
+```bash
+cat ~/.claude-bridge/anomaly.jsonl | jq 'select(.kind == "token_collision_detected")'
+```
+
+**시간대별 필터**:
+```bash
+cat ~/.claude-bridge/anomaly.jsonl | jq 'select(.ts >= "2026-04-20T10:00:00")'
+```
+
+## 로그 파일 위치
+
+| 파일 | 목적 | 로테이션 |
+|------|------|---------|
+| `~/.claude-bridge/anomaly.jsonl` | Always-on anomaly | 5MB / 3개 파일 |
+| `~/.claude-bridge/inbox/YYYYMMDD/*.` | 첨부파일 | 자동 (날짜별) |
+| `~/.claude/projects/*/session_id.jsonl` | Claude Code 세션 기록 | Claude Code 관리 |
+| `~/.claude-bridge/dispatcher.sock` | IPC 소켓 (휘발성) | - |
+| `~/.claude-bridge/telegram/bot.pid` | PID lock (임시) | - |
+
+## 구조화 로그 스타일
+
+모든 anomaly 레코드:
 ```json
-{"ts": "...", "hash": "md5", "busy": bool, "awaiting_approval": bool,
- "raw": "<trimmed>", "clean": "<trimmed>"}
+{
+  "ts": "ISO-8601",
+  "kind": "AnomalyKind",
+  // context-specific fields:
+  "where": "function/module",
+  "op": "operation name",
+  "error": "error message",
+  "sessionId": "s1",
+  "chatId": "123",
+  ...
+}
 ```
 
-`raw`/`clean` 은 각각 8000자 초과 시 꼬리 잘림. md5 동일하면 저장 스킵 (idle 압축).
+**규칙**:
+- `where` — 함수/모듈 위치 (예: "dispatcher.ts", "server.ipc")
+- `op` — 수행 중이던 작업 (예: "permission_request_relay")
+- `error` — Error.toString() 결과
+- 모든 ID는 문자열 (chatId, userId, sessionId 등)
 
-### `events.jsonl`
+## 디버그 옵션
 
-`dump.py:106-120` `event(source, kind, **fields)`. `{ts, source, kind, ...}` 한 줄씩. 주요 source/kind:
-
-| source | kind | 필드 | 의미 |
-|--------|------|-----|------|
-| `tmux` | `send_input` | `text`, `length` | Claude 에 주입된 텍스트 |
-| `tmux` | `send_key` | `key` | ESC/Enter/Up/Down 등 |
-| `sender` | `send_output` | `length`, `chunks`, `preview` | 사용자로 송출된 본문 |
-| `sender` | `send_approval` | `preview` | 승인 박스 스니펫 |
-| `sender` | `send_html_fail` / `send_plain_fail` | `error` | 전송 실패 |
-| `receiver` | `on_message` | `has_photo`, `caption`, `length` | 사용자 메시지 수신 |
-| `receiver` | `callback` | `data`, `chat_id` | 버튼 콜백 |
-| `core` | `monitor_start` / `monitor_cancelled` | `chat_id`, `session_id` | monitor 생명주기 |
-| `core` | `queue_slip` | `tag`, `slip_kind`, `idx`, `cc`, `last_fp` | slip 감지 |
-| `core` | `flush_peek` | `tag`, `include_last`, `completed_count`, `new_count`, `queue_idx`, `slip` | flush 판정 결과 |
-| `core` | `flush_block` | `tag`, `length`, `preview` | 실제 송출한 블록 미리보기 |
-| `core` | `flush_send_fail` | `tag`, `error` | 송출 실패 |
-| `dump` | `init` / `tick_started` / `tick_stopped` / `tick_error` | — | dump 자체 생명주기 |
-
-### 교차 대조 기법
-
-- **스트리밍 누락 조사**: `pane_tick.jsonl` 에서 `⏺` 블록 시각을 뽑고 `events.jsonl` 의 `flush_block.preview` 와 대조 → pane 에 있었지만 송출되지 않은 블록 식별.
-- **경계 오탐 확증**: `completed_count=0, new_count=0, slip=null` 이 `tag="response"` 로 연속 찍히면 `_response_region` 오탐 시나리오.
-
-## 버그 리포트 수집
-
-`bin/bugreporter.sh` (추정 — 파일 별도) 가 다음을 한 타임스탬프 디렉토리로 묶는다:
-
-```
-bugreport/YYYYMMDD_HHMMSS/
-  ├─ BUG_REPORT.md          # 분석 산출물
-  ├─ CLAUDE.md              # 세션 목적 지시서
-  ├─ tmux_capture.txt       # 최근 pane 500줄 + 세션 상태
-  ├─ logs/<date>.log        # 해당 시각 포그라운드 로그
-  ├─ config_masked.json     # 토큰 마스킹한 설정
-  ├─ bot.py, bridge/*.py    # 소스 스냅샷
-  ├─ git_status.txt         # git 상태/최근 커밋
-  └─ dump/                  # 있을 때만 (CB_DUMP=1 세션이었을 경우)
-```
-
-기존 리포트 예시: `bugreport/20260417_095801/`, `bugreport/20260418_094744/` 등.
+**CB_DUMP** 환경변수
+- `CB_DUMP=1` — dumpEnabled 플래그 활성화
+- 추가 상세 로그 기록 (현재 미사용, 향후 확장)
 
 ## Known Fragility
 
-1. **로그 스팸 없음 ≠ 정상 동작**. `take_new` 가 `[]` 를 리턴하는 경로는 `for blk in new_blocks:` 본체가 돌지 않아 `AI→BOT` / `BOT→USER` 로그가 전혀 남지 않는다. `flush_peek` 이벤트는 dump 에 찍히지만 CB_DUMP 가 꺼진 상태에서는 관측 불가.
-2. **로그 레벨 없음**. 모든 `_log` 가 `print` — 중요도 필터가 없음. `logs/` 가 누적되면 수동 grep 외 분석 불가.
-3. **dump 파일 버퍼링**. `buffering=1` (line buffered) 로 열지만 flush 는 OS 의 line buffer 정책에 의존. 비정상 종료 시 마지막 몇 레코드 유실 가능.
-4. **dump 경로 고정**. `bridge/dump.py:60` 이 `<repo>/dump` 에 하드코딩. 배포 환경에서 별도 경로 구성 불가.
+- rotateIfNeeded() 실패 시 silent catch이므로 로테이션 실패를 감지하기 어려움
+- 매우 많은 anomaly가 발생하면 (초당 100+) 파일 쓰기 buffering 이슈 가능
 
 ## 참고
 
-- 증거 기반 버그 분석 예시: `bugreport/20260418_094744/BUG_REPORT.md`
-- 파이프라인의 flush 종류: [02-streaming-pipeline.md](02-streaming-pipeline.md)
+- 로거 구현: `src/core/anomaly.ts`
+- IPC 프로토콜: `src/core/ipc.ts`
+- CI 설정: `.github/workflows/ci.yml`

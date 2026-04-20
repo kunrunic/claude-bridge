@@ -1,103 +1,114 @@
 # 01. 런타임 아키텍처
 
+MCP stdio 채널 기반, 멀티 세션을 지원하는 Telegram ↔ Claude Code 브리지 서버 토폴로지.
+
 ## 토폴로지
 
 ```
 ┌──────────────┐        ┌────────────────────────────────────┐
-│              │ HTTPS  │  bot.py (python-telegram-bot)      │
-│ Telegram     │ ◄────► │  ├─ Application (long-polling)     │
-│ Bot API      │        │  └─ Handlers: cmd_*, on_message,   │
-│              │        │                on_callback         │
-└──────────────┘        └──────────────┬─────────────────────┘
-                                       │ in-process call
-                                       ▼
-                        ┌────────────────────────────────────┐
-                        │  bridge.core.Bridge (싱글톤)        │
-                        │  ├─ monitor(): asyncio task         │
-                        │  ├─ queue: StreamQueue              │
-                        │  └─ state flags (awaiting_approval, │
-                        │                  was_busy, …)       │
-                        └──────────┬─────────────────┬────────┘
-                    capture-pane   │                 │ send-keys
-                         ◄─────────┘                 └────────►
-                        ┌─────────────────────────────────────┐
-                        │  tmux session "claude_bridge"       │
-                        │  └─ pane 0: Claude Code TUI         │
-                        │     (`claude [--resume <id>]        │
-                        │       [--dangerously-skip-permissions]`)│
-                        └─────────────────────────────────────┘
+│              │ HTTPS  │  dispatcher.ts (Bun)               │
+│ Telegram     │ long-  │  ├─ Registry (session 추적)        │
+│ Bot API      │ polling│  ├─ IPC server (unix socket)       │
+│              │        │  ├─ Poller (inbound 변환)          │
+└──────────────┘        │  └─ Observer (pane status)         │
+       │                └──────────────┬─────────────────────┘
+       │                  async call  │ (IPC over unix socket)
+       │                              ▼
+       │        ┌────────────────────────────────────┐
+       │        │  MCP stdio server (server.ts)      │
+       │        │  (per Claude Code session)         │
+       │        │  ├─ tools: reply, react, edit...   │
+       │        │  └─ notifications: inbound, perm...│
+       │        └──────┬─────────────┬────────────────┘
+       │        publish │             │ subscribe
+       │ Telegram       │ Poller      │
+       │ inbound  ◄─────┘             ▼
+       │ + polling              Claude Code
+       └─────────────────────► (tmux pane)
+                          capture-pane
 ```
 
-- **Claude API 를 직접 쓰지 않는다.** Claude Code TUI 를 tmux pane 에 띄우고 `capture-pane` 로 화면을 읽어 응답을 추출한다 (`bridge/tmux.py:57-69`).
-- **1:1 싱글톤** — `bridge.core.bridge` 는 모듈 전역 인스턴스. chat_id ↔ tmux 세션 ↔ Claude 세션은 1:1 로 가정한다 (`bridge/core.py:674-675`). 다중 사용자 지원 아님.
-- **인스턴스 격리** — tmux 세션 이름을 `tmux_session` 설정값(기본 `claude_bridge`)으로 잡아 `_ts()`/`_tp()` 로 exact-match 만 허용. sibling 세션 오인 조작 방지 (`bridge/tmux.py:16-34`).
+## 세 계층의 분리
 
-## 모듈 레이어링
+**Telegram 채널 무관 핵심 로직** (`src/core/`)
+- `dispatcher-core.ts` — spawnSession, killSession, handleSlash 순수 함수
+- `registry.ts` — active session 추적, 상태 저장
+- `slash.ts` — 커맨드 파싱 및 BOT_COMMANDS 목록
+- `sessions.ts` — ~/.claude/projects 스캐너, 세션 복원
+- `lifecycle.ts` — PID lock (중복 실행 방지), orphan watchdog, graceful shutdown
+- `observer.ts` — pane tail 분석으로 busy/idle/error 신호 감지
+- `ipc.ts` — unix socket 프로토콜 (dispatcher ↔ MCP server)
+- `anomaly.ts` — always-on JSONL 로거
 
-`bridge/__init__.py:3-12` 에 선언된 단방향 의존 순서:
+**Telegram 채널 구현** (`src/channels/telegram/`)
+- `server.ts` — MCP stdio 서버. 도구 4개(reply, react, edit_message, download_attachment) 등록, permission 알림
+- `poller.ts` — grammy 래퍼, inbound 메시지 → IPC 메시지 변환, token collision 감지
+- `client.ts` — grammy 클라이언트 래퍼
+- `permissions.ts` — InlineKeyboard 빌드, 권한 요청 UI 포매팅
+- `access.ts` — allowlist 게이트 (userId/chatId)
+- `config.ts` — ~/.claude-bridge/config.json 로드, 권한 강화
+- `inbox.ts` — 첨부파일 저장
 
-```
-config   — 상수/설정/로거/권한 게이트
-tmux     — tmux 원시 조작 (subprocess)
-parser   — pure 함수 (ANSI strip, 상태 판정, ⏺ 블록 추출)
-session  — Claude 세션 JSONL 검색 + 락
-sender   — Telegram outbound (_send_output, _send_approval, …)
-core     — Bridge + monitor 루프
-receiver — Telegram inbound (cmd_*, on_message, on_callback)
-```
+**진입점**
+- `dispatcher.ts` — main 함수. config 로드, 모든 계층 조립, poller/ipc/observer 시작
 
-테스트가 특정 심볼을 patch 할 때 **정의 위치 기준**으로 패치하도록, sibling 모듈은 반드시 `<module>.<name>` 형태로 호출한다 (`bridge/core.py:6-7`, `bridge/receiver.py:6-7`).
+## 채널 무관성 원칙
 
-### 계층 위반 금지선
+`src/core/*` 는 Telegram을 몰라야 한다:
+- `dispatcher-core.ts` — 순수 함수. Session, Registry, SlashCommand만 다룸 (`src/core/dispatcher-core.ts:37-168`)
+- `handleSlash` 콜백은 dependency injection (spawn, resume, kill, listRecent, renderStatus) (`dispatcher-core.ts:87-97`)
+- `registry.ts` 는 session state만 관리. Telegram API 호출 없음
 
-- `parser.py` 에 `tmux`/`sender`/`telegram` import 금지 (`bridge/parser.py:1-5`).
-- `sender.py`/`receiver.py` 가 서로 import 하지 않음 (동일 레이어).
-- `bot.py` 는 엔트리 포인트일 뿐, 로직을 담지 않음 — Handler 바인딩과 폴링 루프만 (`bot.py:144-199`).
+`src/channels/telegram/*` 는 dispatcher와 분리:
+- MCP server는 dispatcher와 IPC 소켓으로 통신 (`server.ts:136`)
+- 권한 요청은 permission_request IPC 메시지 → dispatcher가 Telegram 전송 (`dispatcher.ts:100-122`)
 
-## 엔트리 포인트 `bot.py`
+## 멀티 세션 아키텍처
 
-| 단계 | 위치 | 역할 |
-|------|------|------|
-| 부트 | `bot.py:166-199` | `dump.init` → `_build_app` → `app.run_polling` (exponential backoff 재연결) |
-| 핸들러 등록 | `bot.py:144-163` | CommandHandler(`/start`, `/end`, `/esc`, `/model`, `/unlock`, `/whoami`) + CallbackQuery + Message |
-| post_init | `bot.py:127-141` | 부팅 시 tmux 세션이 이미 있으면 `bridge.monitor` 재부착 |
-| 재-export | `bot.py:30-122` | 기존 테스트가 `bot.<symbol>` 로 참조하는 모든 심볼을 re-export |
+- **per-session tmux** — 각 Claude Code 세션은 자신의 tmux 세션 (이름: `cb-s{N}`) (`registry.ts:49`)
+- **per-session MCP server** — Claude Code 실행 시 새 MCP server stdio 시작. 환경변수로 session_id 전달 (`dispatcher-core.ts:56-58`)
+- **dispatcher 중앙 수집** — 모든 session의 IPC 소켓을 dispatcher가 관리 (`dispatcher.ts:67-78`)
+- **active session 추적** — Registry가 현재 활성 세션 관리 (`registry.ts:39-41`)
 
 ## 외부 의존
 
-- **tmux** (`/opt/homebrew/bin/tmux` 고정 — `bridge/tmux.py:40`). timeout 5초로 모든 subprocess 를 감쌈.
-- **Claude Code CLI** — `config.json` 의 `claude_path`. `--resume <id>` 와 `--dangerously-skip-permissions` 플래그를 조합 (`bridge/core.py:63-69`).
-- **파일 시스템** — `~/.claude/projects/*.jsonl` (세션), `~/.claude/.cb_lock_<id>` (인스턴스간 락, `bridge/session.py:17-23`).
-- **telegram-bot** 라이브러리 — polling + ApplicationBuilder. HTTPXRequest 의 connect/read timeout 10/15초 (`bot.py:148`).
+- **tmux** (`src/core/tmux/session.ts`) — new-session, kill-session, send-keys, capture-pane 래퍼 (`session.ts:27-101`)
+- **Claude Code CLI** — `claude --disallowedTools ... --allowedTools ... --dangerously-load-development-channels server:tg_channel` 명령어로 실행 (`dispatcher-core.ts:51-53`)
+- **파일 시스템**
+  - `~/.claude/projects/*.jsonl` — Claude Code 세션 파일 (복원 용)
+  - `~/.claude-bridge/workspaces/` — 브리지 세션 cwd 격리 디렉토리 (`dispatcher.ts:64`)
+  - `~/.claude-bridge/dispatcher.sock` — IPC unix socket (`ipc.ts:7`)
+  - `~/.claude-bridge/anomaly.jsonl` — always-on 로그 (`anomaly.ts:13`)
+  - `~/.claude-bridge/telegram/bot.pid` — polling lock (`lifecycle.ts:11`)
+- **grammy** (Telegram 클라이언트) — polling 모드, callback_query/message 핸들러
 
-## 설정 (`config.json`)
+## 워크스페이스 격리
 
-`bridge/config.py:37-49`:
-- `token` (Telegram Bot) — 필수
-- `claude_path` — 필수
-- `allowed_ids: [int]` — 권한 게이트; 비어있으면 모든 inbound 가 `deny()`
-- `tmux_session` — 기본 `"claude_bridge"`
+각 세션은 `~/.claude-bridge/workspaces/<label>/` 디렉토리에서 실행되거나, 명시적 cwd 전달 가능:
+- `/new` — 새 세션, 기본값 `~/.claude-bridge/workspaces/bot/`
+- `/resume <id>` — 기존 세션 복원. ~/.claude/projects 에서 저장된 cwd 복구
+- 모든 세션의 클라이언트는 자신의 MCP server에 접속 (IPC로는 dispatcher만 도달) (`server.ts:136`)
 
-상수는 모두 `bridge/config.py:11-22` 에 모임. 대표값:
+## 설정
 
-| 이름 | 값 | 용도 |
-|------|-----|------|
-| `TMUX_SCROLL_LINES` | 500 | `capture-pane -S -N` 의 N |
-| `APPROVAL_SCAN_LINES` | 30 | `_approval_box` / `summarize_approval` 스캔 |
-| `BUSY_CHECK_TAIL` | 20 | `is_busy` fallback tail |
-| `BUSY_STREAM_SEC` | 10 | bypass 모드 ⏺ 스트리밍 간격 |
-| `BUSY_TIMEOUT_SEC` | 600 | watchdog 총 시간 상한 |
-| `BUSY_STUCK_SEC` | 300 | pane 변화 없음 watchdog |
-| `SETTLE_TICKS` | 2 | idle 안정화 틱 수 |
-| `MAX_MSG_CHARS` | 3500 | Telegram chunking |
+`~/.claude-bridge/config.json`:
+```json
+{
+  "botToken": "string (required)",
+  "allowlist": ["user_id_1", "chat_id_1"],
+  "defaultChatId": "string (optional, for announcements)",
+  "dumpEnabled": false
+}
+```
+
+파일 권한은 자동 강화: 디렉토리 0700, 파일 0600 (`config.ts:17-24`)
 
 ## Known Fragility
 
-- `tmux_session` 을 `claude_bridge` 로 두고 `claude_bridge2` 같은 sibling 을 함께 돌릴 때, prefix-match 로 오인 조작된 사고가 있었음 → 현재 `_ts()`/`_tp()` 로 exact-match 강제 (`591f553`).
-- `post_init` 의 재부착(`bot.py:137-141`) 은 `ALLOWED_IDS` 의 **첫번째** chat_id 로만 — 다중 사용자 미지원의 실질적 단서.
+- 특이사항 없음.
 
 ## 참고
 
-- 데이터 흐름 상세: [02-streaming-pipeline.md](02-streaming-pipeline.md)
-- 상태 플래그: [04-state-machine.md](04-state-machine.md)
-- 관측: [06-observability.md](06-observability.md)
+- IPC 프로토콜 상세: [02-mcp-channel-protocol.md](02-mcp-channel-protocol.md)
+- 세션 생명주기: [03-session-lifecycle.md](03-session-lifecycle.md)
+- 슬래시 커맨드: [04-slash-commands.md](04-slash-commands.md)
