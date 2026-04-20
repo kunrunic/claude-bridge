@@ -1,13 +1,13 @@
 {
-  "name": "@claude-bridge/telegram-channel",
-  "version": "0.1.0",
+  "name": "claude-bridge",
+  "version": "0.2.0",
   "private": true,
-  "description": "claude-bridge2 — Telegram MCP channel adapter (Bun/TS). Replaces Python pane-parsing bridge.",
+  "description": "claude-bridge — Claude Code 를 Telegram 으로 연결하는 MCP 채널 호스트 (Bun/TS). src/core 는 채널 무관, src/channels/<name> 은 채널별 구현.",
   "type": "module",
-  "module": "src/server.ts",
   "scripts": {
-    "start": "bun run src/server.ts",
-    "dev": "bun --hot run src/server.ts",
+    "start": "bun run src/dispatcher.ts",
+    "dev": "bun --hot run src/dispatcher.ts",
+    "server": "bun run src/channels/telegram/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

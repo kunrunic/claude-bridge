@@ -1,6 +1,6 @@
 import { Bot, InputFile, type InlineKeyboard } from "grammy";
 import { extname } from "node:path";
-import * as anomaly from "../anomaly.ts";
+import * as anomaly from "../../core/anomaly.ts";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 

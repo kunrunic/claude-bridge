@@ -2,39 +2,39 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import { loadConfig } from "./config.ts";
-import { TelegramClient } from "./telegram/client.ts";
-import { Poller } from "./telegram/poller.ts";
-import { Registry } from "./registry.ts";
-import * as slash from "./slash.ts";
-import * as tmux from "./tmux/session.ts";
-import { observe } from "./observer.ts";
+import { loadConfig } from "./channels/telegram/config.ts";
+import { TelegramClient } from "./channels/telegram/client.ts";
+import { Poller } from "./channels/telegram/poller.ts";
+import { Registry } from "./core/registry.ts";
+import * as slash from "./core/slash.ts";
+import * as tmux from "./core/tmux/session.ts";
+import { observe } from "./core/observer.ts";
 import {
   DEFAULT_SOCKET_PATH,
   startServer,
   type IpcMessage,
   LineSocket,
-} from "./ipc.ts";
+} from "./core/ipc.ts";
 import {
   buildCompactKeyboard,
   buildExpandedKeyboard,
   formatCompactPrompt,
   formatExpandedBody,
   pendingPermissions,
-} from "./permissions.ts";
-import * as anomaly from "./anomaly.ts";
+} from "./channels/telegram/permissions.ts";
+import * as anomaly from "./core/anomaly.ts";
 import {
   acquirePollingLock,
   installShutdownHandlers,
   releasePollingLock,
-} from "./lifecycle.ts";
-import * as core from "./dispatcher-core.ts";
+} from "./core/lifecycle.ts";
+import * as core from "./core/dispatcher-core.ts";
 import {
   findSessions,
   formatSessionList,
   getSessionCwd,
   type SessionInfo,
-} from "./sessions.ts";
+} from "./core/sessions.ts";
 import { existsSync } from "node:fs";
 
 const OBSERVE_TICK_MS = 5_000;

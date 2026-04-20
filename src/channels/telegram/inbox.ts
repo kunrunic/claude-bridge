@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, extname } from "node:path";
-import * as anomaly from "./anomaly.ts";
+import * as anomaly from "../../core/anomaly.ts";
 
 const INBOX_ROOT = join(homedir(), ".claude-bridge", "inbox");
 

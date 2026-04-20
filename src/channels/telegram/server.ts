@@ -9,8 +9,8 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { loadConfig } from "./config.ts";
-import { TelegramClient } from "./telegram/client.ts";
-import { Poller } from "./telegram/poller.ts";
+import { TelegramClient } from "./client.ts";
+import { Poller } from "./poller.ts";
 import { saveAttachment } from "./inbox.ts";
 import { assertAllowedChat } from "./access.ts";
 import {
@@ -18,14 +18,14 @@ import {
   buildCompactKeyboard,
   formatCompactPrompt,
 } from "./permissions.ts";
-import { connectClient, type LineSocket } from "./ipc.ts";
-import * as anomaly from "./anomaly.ts";
+import { connectClient, type LineSocket } from "../../core/ipc.ts";
+import * as anomaly from "../../core/anomaly.ts";
 import {
   acquirePollingLock,
   installShutdownHandlers,
   releasePollingLock,
   startOrphanWatchdog,
-} from "./lifecycle.ts";
+} from "../../core/lifecycle.ts";
 
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const TG_TEXT_LIMIT = 4096;

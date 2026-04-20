@@ -2,7 +2,7 @@
   "mcpServers": {
     "tg_channel": {
       "command": "bun",
-      "args": ["/Users/kunrunic/claude-bridge2/channels/telegram/src/server.ts"]
+      "args": ["/Users/kunrunic/claude-bridge2/src/channels/telegram/server.ts"]
     }
   }
 }

@@ -1,15 +1,15 @@
 import type { TelegramClient } from "./client.ts";
-import type { Config } from "../config.ts";
-import { gate } from "../access.ts";
-import { saveAttachment } from "../inbox.ts";
+import type { Config } from "./config.ts";
+import { gate } from "./access.ts";
+import { saveAttachment } from "./inbox.ts";
 import {
   CALLBACK_RE,
   REPLY_RE,
   pendingPermissions,
   buildExpandedKeyboard,
   formatExpandedBody,
-} from "../permissions.ts";
-import * as anomaly from "../anomaly.ts";
+} from "./permissions.ts";
+import * as anomaly from "../../core/anomaly.ts";
 
 export type InboundMeta = {
   chat_id: string;
