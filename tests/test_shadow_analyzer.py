@@ -138,9 +138,17 @@ def test_resume_resets_when_file_inode_changes(tmp_path: Path):
     _run(a1.poll())
     a1.stop()
 
-    # 파일을 완전히 새로 만들어 inode 변경
-    raw.unlink()
-    raw.write_bytes(b"Welcome to Claude Code\n")
+    # 저장된 state 의 inode 를 의도적으로 mismatch 값으로 덮어써서 결정론적으로
+    # reset_inode_mismatch 경로를 exercises. 과거엔 `unlink + write` 로 커널
+    # inode 할당에 의존했으나, Linux CI 의 tmpfs/ext4 가 방금 해제된 inode 를
+    # 재사용해 mismatch 가 발생하지 않는 경우가 있었다 (CI flakiness 원인).
+    from bridge.shadow_analyzer import ShadowAnalyzer as _SA
+    from tools.state_store import StateStore
+    store = StateStore(_SA._state_path("sess", base=tmp_path))
+    data = store.load()
+    assert data is not None and data["identity"]["inode"] is not None
+    data["identity"]["inode"] = (data["identity"]["inode"] or 0) + 999_999
+    store.save(data)
 
     a2 = ShadowAnalyzer("sess", base=tmp_path)
     a2.start(current_path=raw)
