@@ -1,77 +1,136 @@
 # claude-bridge
 
-**텔레그램에서 내 PC 의 Claude Code 를 원격 조작**하는 MCP 채널 호스트.
+**Telegram 에서 내 PC 의 Claude Code 를 원격 조작**하는 MCP 채널 호스트.
 외출 중에도, 자기 전 침대에서도 진행 중인 개발 세션을 이어갈 수 있다.
-
-Bun + TypeScript. Claude Code 가 공개한 `claude/channel` MCP 프로토콜 위에서
-동작 — Claude 가 `reply()` / `react()` / `edit_message()` /
-`download_attachment()` 툴을 **직접** 호출해 대화한다. 터미널 에뮬레이션을
-사이에 끼워넣지 않는다.
+Bun + TypeScript.
 
 ---
 
-## 왜 이걸 쓰나
+## 빠른 시작
 
-### 1. 터미널 스크래핑이 아니라 프로토콜이다
+```bash
+git clone https://github.com/kunrunic/claude-bridge.git
+cd claude-bridge
+bun install
+./bin/setup.sh          # 대화형 — 토큰 입력 + user_id 한 번
+./bin/start.sh          # 백그라운드 기동
+```
 
-기존 Telegram ↔ Claude 브리지는 대부분 tmux `pipe-pane` 이나 `capture-pane`
-출력을 regex 로 긁어서 채팅에 보낸다. 터미널은 시각적 표시용 버퍼라 구조가
-없고, 래핑·ANSI 시퀀스·커서 이동·중간 재렌더링이 섞여 돌아간다. 이 위에서
-"지금 Claude 가 뭘 했는지" 를 추론하려면 휴리스틱이 계속 늘어나고, 한 곳을
-고치면 다른 곳이 깨지는 구조적 취약함이 쌓인다.
+Telegram Bot Token ([@BotFather](https://t.me/botfather)) 과 본인
+Telegram user_id (@userinfobot 으로 확인) 만 있으면 준비 완료. `setup.sh`
+가 `tg_channel` MCP 서버를 user scope 로 등록하므로 어떤 디렉토리에서 세션을
+spawn 해도 바로 동작한다.
 
-본 저장소는 그 레이어를 폐기하고 Claude Code 가 직접 제공하는 MCP 채널
-프로토콜을 사용한다. Claude 가 "답장 할 차례" 라고 판단했을 때 정확히
-`reply()` 툴을 호출한다. 스트리밍 타이밍, 래핑 복원, busy 감지 오탐, 앵커
-stranding, pre-busy flush 같은 고질적 이슈가 **원천적으로 존재하지 않는다.**
+이후 봇에 `/new` 를 보내 새 세션을 만들거나, `/resume` 으로 과거 세션을
+이어갈 수 있다.
 
-### 2. 멀티 세션이 1급 시민이다
+---
 
-`/new`, `/fork`, `/switch`, `/kill`, `/sessions` 로 여러 Claude 세션을
-동시에 띄우고 오간다. 각 세션은 자신의 tmux 세션, 자신의 MCP 서버, 자신의
-workspace 디렉토리를 갖는다.
-- 한 세션에서 리서치, 다른 세션에서 구현, 또 다른 세션에서 PR 코멘트 응답을
-  병렬로 돌릴 수 있다.
-- `/fork` 는 기존 세션의 컨텍스트를 이어받은 새 세션을 만든다 — 실험적
-  방향을 원본을 망가뜨리지 않고 시도할 수 있다.
+## 동작 흐름
 
-### 3. workspace 가 격리돼 있다
+```
+┌──────────────┐       ┌─────────────────────────────────────┐
+│ Telegram     │ HTTPS │  dispatcher.ts (Bun)                │
+│ Bot API      │<─────>│  polling + session routing          │
+└──────────────┘       └──────────────┬──────────────────────┘
+                                      │ IPC (unix socket)
+                      ┌───────────────┼───────────────┐
+                      ▼               ▼               ▼
+              ┌──────────────┐┌──────────────┐┌──────────────┐
+              │ MCP stdio s1 ││ MCP stdio s2 ││ MCP stdio s3 │
+              │ reply/react  ││ reply/react  ││ reply/react  │
+              │ edit/attach  ││ edit/attach  ││ edit/attach  │
+              └──────┬───────┘└──────┬───────┘└──────┬───────┘
+                     │ stdio         │ stdio         │ stdio
+                     ▼               ▼               ▼
+              ┌──────────────┐┌──────────────┐┌──────────────┐
+              │ Claude Code  ││ Claude Code  ││ Claude Code  │
+              │ (tmux cb-s1) ││ (tmux cb-s2) ││ (tmux cb-s3) │
+              └──────────────┘└──────────────┘└──────────────┘
+```
 
-봇이 띄우는 세션의 cwd 는 `~/.claude-bridge/workspaces/<label>/` 하위로
-분리된다. 사용자가 평소 쓰는 프로젝트 디렉토리와 섞이지 않아서 `claude
---resume` picker 가 봇 세션으로 채워지는 일이 없다. 원격 작업이 로컬 작업의
-흐름을 방해하지 않는다.
+Telegram 메시지는 dispatcher 가 long-polling 으로 받아 **현재 활성 세션**
+의 MCP 서버로 전달한다. Claude 는 답할 준비가 되면 `reply()` 도구를
+호출하고, 그 호출이 다시 dispatcher 를 거쳐 Telegram 으로 나간다. 각 세션은
+독립된 tmux 프로세스 + 독립된 MCP 서버를 갖는다.
 
-### 4. 관찰 가능한 실패
+---
 
-**항상 켜진** JSONL anomaly 로그 (`~/.claude-bridge/anomaly.jsonl`) 가
-shutdown, stale_instance_evicted, orphan_detected, socket 에러, MCP 호출
-실패, tmux 상태 이상 등을 타임스탬프와 함께 기록한다. "뭔가 이상한데
-재현이 안 돼요" 를 방지한다 — dump 를 켜두지 않았어도 이벤트는 남는다.
+## 주요 기능
 
-### 5. 봇 재기동과 독립된 Claude 세션
+### 진행 중인 작업 이어가기
 
-봇이 죽거나 배포 재기동돼도 tmux 세션과 Claude 프로세스는 살아있다.
-재기동 시 `lifecycle.ts` 의 PID lock 이 중복 실행을 막고, orphan watchdog
-이 버려진 세션을 감지·정리한다. Telegram polling 은 exponential backoff
-로 자동 재연결.
+현재 Claude Code 로 작업하던 세션을 Telegram 봇을 통해 그대로 이어갈 수
+있다.
 
-### 6. 구조적 · 명시적 UX
+- `/resume` 을 누르면 과거 세션 목록이 뜬다. 선택하면 해당 세션의
+  **컨텍스트와 파일 히스토리가 그대로 복원**된다.
+- Claude 가 원래 작업하던 디렉토리(cwd) 도 자동으로 맞춰진다.
 
-- 슬래시 커맨드 (`/new`, `/resume`, `/fork`, `/switch`, `/kill`,
-  `/sessions`, `/current`, `/backlog`, `/status`) 는 Telegram `setMyCommands`
-  로 봇 메뉴에 자동 등록된다. 자연어 해석 없음.
-- 승인 프롬프트는 InlineKeyboard. 버튼 클릭 → `permission_request` IPC →
-  Claude 에 정확한 허용/거부 신호.
-- 긴 응답은 청크로 잘라 `[1/3]`, `[2/3]` 로 보낸다.
+### 여러 세션 동시 운영
 
-### 7. 보안
+`/new`, `/fork`, `/switch`, `/kill` 로 여러 Claude 세션을 동시에 띄우고
+오간다. 각 세션은 자신의 tmux, 자신의 MCP 서버, 자신의 작업 디렉토리를
+가지고 독립적으로 돌아간다.
 
-- `config.json` 의 allowlist 에 있는 user/chat id 만 접근. 봇 발견자가
-  임의로 등록할 수 없다.
-- `~/.claude-bridge/` 디렉토리 0700, 파일 0600 으로 자동 강화.
-- Token 충돌 감지: 같은 bot token 으로 다른 머신에서 동시에 폴링이
-  시작되면 즉시 탐지해 경고.
+- 한 세션에서 리서치, 다른 세션에서 구현, 또 다른 세션에서 PR 리뷰 —
+  병렬 진행 가능.
+- `/fork <id>` 는 기존 세션의 **컨텍스트를 상속받은 새 세션**을 만든다.
+  실험적 방향을 원본을 건드리지 않고 시도하거나, 무거워진 세션에서 가벼운
+  갈래로 탈출할 때 쓴다.
+
+### 작업 폴더 지정
+
+`/new [label] [cwd]` 로 원하는 디렉토리에서 새 세션을 시작.
+
+- cwd 명시 → 그 디렉토리에서 Claude 실행. 진행 중이던 프로젝트에 바로 투입.
+- 생략 → `~/.claude-bridge/workspaces/<label>/` 격리 공간에서 실행. 내 평소
+  프로젝트 폴더가 봇 세션으로 섞이지 않는다.
+
+### 안정적인 메시지 교환
+
+Claude 가 네 가지 MCP 도구를 직접 호출해 Telegram 과 대화한다:
+
+- `reply` — 메시지 전송
+- `react` — 이모지 반응
+- `edit_message` — 기존 메시지 수정
+- `download_attachment` — 첨부 파일 다운로드
+
+이 방식은 [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
+의 Telegram 플러그인 구현을 레퍼런스로 삼아 만들었다. Claude 가 "답할
+차례"라고 판단했을 때 정확한 도구 호출로 응답하므로, 터미널 출력을 파싱하는
+방식보다 안정성이 보장된다 — 메시지 누락, 레이아웃 깨짐, 타이밍 race 같은
+이슈가 없다.
+
+### 원격 승인
+
+Claude 가 Bash, Edit 같은 도구를 사용하려 할 때, Telegram 에
+**Allow / Deny 버튼**이 뜬다. 한 번 탭하면 Claude 에 즉시 전달된다.
+
+### 이미지 / 파일 첨부
+
+Telegram 에서 보낸 이미지나 파일은 로컬에 저장되고, Claude 가 경로를
+받아 `Read` 또는 이미지 도구로 분석한다.
+
+### 재기동 안전
+
+봇이 재기동되면 dispatcher 는 기존 세션들을 **정상 종료**시킨다 — 각
+Claude 에 `/exit` 를 보내 `~/.claude/projects` 세션 JSONL 을 저장하고,
+그 뒤 tmux 를 정리한다. 재기동 후 `/resume` 으로 이어가면 된다. 비정상
+종료(SIGKILL, 전원 차단 등) 로 남은 orphan tmux 는 다음 startup 시
+자동으로 청소된다.
+
+### 여러 인스턴스 동시 운영
+
+환경변수 `CB_HOME` 으로 전체 런타임 루트를 옮길 수 있다:
+
+```bash
+CB_HOME=~/cb-work    ./bin/start.sh   # 업무용
+CB_HOME=~/cb-private ./bin/start.sh   # 개인용
+```
+
+각 인스턴스는 독립된 config, 소켓, 로그, registry, workspace 를 갖는다.
+Telegram bot token 만 서로 다르게 주면 동시에 폴링 가능.
 
 ---
 
@@ -80,30 +139,31 @@ shutdown, stale_instance_evicted, orphan_detected, socket 에러, MCP 호출
 ```
 src/
   core/                          # channel-agnostic infrastructure
-    anomaly.ts                   # always-on JSONL logger
+    paths.ts                     # CB_HOME + all runtime paths
     dispatcher-core.ts           # spawn / kill / handleSlash (pure funcs)
-    ipc.ts                       # dispatcher <-> server socket protocol
-    lifecycle.ts                 # PID lock / orphan watchdog / shutdown
-    observer.ts                  # pane status (busy / compact / limit)
-    registry.ts                  # active session registry
+    registry.ts                  # active session tracking + persistence
     sessions.ts                  # ~/.claude/projects scanner (resume)
     slash.ts                     # command parser + BOT_COMMANDS
-    tmux/session.ts              # tmux new-session / send-keys / capture
+    ipc.ts                       # dispatcher <-> MCP server protocol
+    lifecycle.ts                 # PID lock / orphan watchdog / shutdown
+    observer.ts                  # pane status monitor (busy / idle)
+    anomaly.ts                   # always-on JSONL logger + rotation
+    tmux/session.ts              # tmux wrapper (new-session / send-keys)
   channels/
     telegram/                    # Telegram-specific implementation
-      server.ts                  # MCP stdio server (reply/react/edit/dl)
+      server.ts                  # MCP stdio server
       client.ts                  # grammy wrapper
       poller.ts                  # long-polling + permission callback
       access.ts                  # allowlist gate
       permissions.ts             # InlineKeyboard UI
       inbox.ts                   # attachment storage
-      config.ts                  # channel config load + chmod
+      config.ts                  # channel config + chmod
   dispatcher.ts                  # main entry (core + channel wiring)
-tests/                           # Bun test (62 cases, expanding)
+tests/                           # Bun test suite
 ```
 
-신규 채널 (예: Slack, Discord) 추가 시 `src/channels/<name>/` 하나 더
-만들면 되도록 core/channel 경계를 유지한다.
+신규 채널 (Slack, Discord 등) 추가 시 `src/channels/<name>/` 을 하나 더
+만들면 된다. `src/core/` 는 채널 무관성을 유지한다.
 
 ---
 
@@ -113,18 +173,12 @@ tests/                           # Bun test (62 cases, expanding)
 - [Bun](https://bun.sh) 1.2+
 - tmux
 - Claude Code CLI (`claude` 커맨드가 PATH 에)
-- Telegram Bot Token ([@BotFather](https://t.me/botfather))
+- Telegram Bot Token
 
-## 설치
+## 설정
 
-```bash
-git clone https://github.com/kunrunic/claude-bridge.git
-cd claude-bridge
-bun install
-./bin/setup.sh          # 대화형 초기화 — 토큰 입력, chat_id 확인, config 생성
-```
-
-설정은 `~/.claude-bridge/config.json` 에 저장된다:
+`./bin/setup.sh` 가 대화형으로 진행한다. 결과는
+`~/.claude-bridge/config.json` 에 저장:
 
 ```json
 {
@@ -134,15 +188,17 @@ bun install
 }
 ```
 
-디렉토리/파일 권한은 기동 시 `0700` / `0600` 으로 자동 강화.
+디렉토리 권한은 자동으로 `0700` / `0600` 으로 강화된다. `tg_channel`
+MCP 서버는 `claude mcp add -s user` 로 user scope 에 등록되므로 어떤
+cwd 에서 spawn 해도 동작한다.
 
 ## 실행
 
 ```bash
 ./bin/start.sh                # 백그라운드 기동
 ./bin/start.sh --fg           # 전경 (Ctrl+C 로 종료)
-./bin/stop.sh                 # 봇 종료 (tmux/Claude 는 살아있음)
-./bin/stop.sh --all           # 봇 + 모든 tmux 세션 종료
+./bin/stop.sh                 # dispatcher 종료 (graceful /exit → 5s → kill)
+./bin/stop.sh --all           # dispatcher + 모든 cb-* tmux 정리
 ./bin/restart.sh              # stop → start
 ```
 
@@ -152,7 +208,7 @@ bun install
 
 | 커맨드 | 동작 |
 |---|---|
-| `/new [label] [cwd]` | 새 Claude 세션 spawn (컨텍스트 0) |
+| `/new [label] [cwd]` | 새 Claude 세션 spawn |
 | `/resume [N\|id]` | 최근 세션 나열 / 동일 session-id 로 이어 실행 |
 | `/fork [N\|id]` | 기존 세션 컨텍스트 상속 + 새 session-id |
 | `/sessions` | 활성 세션 목록 |
@@ -160,72 +216,70 @@ bun install
 | `/kill <id\|label>` | 세션 종료 |
 | `/current` | 현재 활성 세션 |
 | `/backlog [id\|label]` | 백그라운드 누락 메시지 열람 |
-| `/status` | 24h anomaly 요약 |
+| `/status` | 24h 문제 요약 |
 
 ## 개발
 
 ```bash
 bun run typecheck              # tsc --noEmit (strict mode)
-bun test                       # 단위 + 통합 테스트
-bun tests/smoke-spawn.ts       # tmux spawn → IPC hello 왕복 확인
+bun test                       # unit + integration (70 cases)
+bun tests/smoke-spawn.ts       # tmux spawn → IPC hello 왕복
 bun tests/smoke-reply.ts       # Claude → reply() → Telegram 왕복
 bun tests/smoke-permission.ts  # permission_request 왕복
-bun tests/smoke-mcp-stdio.ts   # MCP stdio 핸드셰이크
+bun tests/smoke-mcp-stdio.ts   # MCP stdio handshake
 ```
 
-`.git/hooks/pre-commit` 이 변경 포함 시 typecheck + test 자동 실행.
+`.git/hooks/pre-commit` 이 변경 포함 시 typecheck + test 를 자동 실행한다.
 
-## 문제 진단 & 수리
+---
 
-### 현재 상태 엿보기
+## 문제 해결 도구
 
-```bash
-./bin/capture.sh                      # 활성 세션 tmux 마지막 500 줄 + anomaly 최근
-./bin/capture.sh --session <id>       # 특정 세션 지정
-./bin/capture.sh --follow             # read-only attach (detach: Ctrl+b d)
-```
+문제가 생겼을 때를 위한 세 개의 도구가 포함되어 있다.
 
-### 버그 리포트
-
-증상 재현 직후 증거 수집:
+### 한 줄로 증거 수집 — `bugreporter.sh`
 
 ```bash
 ./bin/bugreporter.sh
 ```
 
-`bugreport/YYYYMMDD_HHMMSS/` 에 tmux capture, anomaly 로그, IPC 덤프,
-config(masked), 소스 스냅샷 수집 후 대화형 Claude 가 타임라인 복원 →
-가설 → 재현 방법 → 제안 수정안 으로 `BUG_REPORT.md` 생성.
+재현 직후 실행하면 타임라인, anomaly 로그, dispatcher 로그, 소스 스냅샷,
+설정(토큰 마스킹) 을 `bugreport/<타임스탬프>/` 에 모은다. 수집된 내용을
+**그대로 GitHub Issue 에 붙여넣을 수 있어**, 재현 환경을 일일이 설명하지
+않아도 된다. 내부적으로 Claude 대화형 세션이 열려 타임라인 분석과 원인
+가설을 `BUG_REPORT.md` 초안으로 작성한다.
 
-### 수리
+### 상세 스냅샷 — `capture.sh`
+
+```bash
+./bin/capture.sh                           # dispatcher 상태 + 세션 목록 + anomaly
+./bin/capture.sh --session cb-s1           # 특정 세션 tmux 패널 last 500
+./bin/capture.sh --follow --session cb-s1  # read-only 실시간 관찰
+```
+
+### 그 자리에서 자가 수리 — `repairer.sh`
 
 ```bash
 ./bin/repairer.sh                             # 가장 최근 bugreport
 ./bin/repairer.sh bugreport/YYYYMMDD_HHMMSS   # 특정 리포트
 ```
 
-리포트를 로드해 Claude 가 범위 요약 → 사용자 승인 → Edit 적용 → 테스트
-실행. 커밋은 수행하지 않음.
+bugreporter 가 만든 리포트를 읽고 **Claude 가 직접 소스 파일을 수정**한다.
+수리 범위를 먼저 요약해 승인을 요청하고, 승인 후 Edit 을 적용하고 테스트를
+돌린다. 커밋은 자동으로 하지 않으며 사용자가 직접 확인 후 수행한다.
 
 ---
 
 ## 설계 문서
 
 - 아키텍처·프로토콜·세션 생명주기·슬래시 커맨드·접근 제어·관찰성:
-  [`docs/design/`](docs/design/README.md) (AS-IS 설계)
-- 현재 전략: [`docs/plans/20260420-mcp-channel-adapter/`](docs/plans/20260420-mcp-channel-adapter/)
+  [`docs/design/`](docs/design/README.md)
 
-## 이력
-
-Python pane-parsing 시대 구현은 2026-04-20 Stage 4 컷오버에서 전면 폐기.
-이전 상태는 태그 [`pre-python-removal-20260420`](https://github.com/kunrunic/claude-bridge/tree/pre-python-removal-20260420)
-으로 조회 가능.
-
-## 라이선스 · Attribution
+## 라이선스 & Attribution
 
 MIT License — 자세한 내용은 [LICENSE](LICENSE) 참조.
 
-MCP 채널 프로토콜 표면과 라이프사이클 패턴 (PID lock / orphan watchdog 등) 은
-[anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
-의 Telegram 플러그인 (Apache 2.0) 을 레퍼런스로 삼아 독립 구현했다. 코드
-사본은 포함되어 있지 않다.
+MCP 채널 프로토콜 표면과 라이프사이클 패턴(PID lock / orphan watchdog 등)
+은 [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
+의 Telegram 플러그인을 레퍼런스로 삼아 독립 구현했다. 코드 사본은 포함되지
+않음.
