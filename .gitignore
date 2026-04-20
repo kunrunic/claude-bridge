@@ -2,6 +2,9 @@
 config.json
 bk_cb.json
 .bot.pid
+# .mcp.json 은 개발자 로컬 MCP 설정 (server.ts 절대 경로 포함, 머신마다 다름).
+# 배포/설치 시엔 bin/setup.sh 가 user-scope 에 등록하므로 커밋 불필요.
+.mcp.json
 
 # Bun / Node
 node_modules/

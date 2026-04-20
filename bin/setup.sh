@@ -119,10 +119,26 @@ cat > "$CONFIG_PATH" <<EOF
 EOF
 chmod 600 "$CONFIG_PATH"
 
+# 10. user-scope MCP 등록 — cwd 무관하게 tg_channel 을 찾게 하기 위함
+SERVER_ABS="$(cd "$(dirname "$0")/.." && pwd)/src/channels/telegram/server.ts"
+if claude mcp get tg_channel >/dev/null 2>&1; then
+  echo "✓ tg_channel 이미 user scope 에 등록됨 (skip)"
+else
+  echo
+  echo "registering tg_channel as user-scope MCP server..."
+  if claude mcp add -s user tg_channel bun "$SERVER_ABS" >/dev/null 2>&1; then
+    echo "✓ user-scope 등록 완료 — 어떤 cwd 에서 spawn 해도 동작"
+  else
+    echo "⚠️  자동 등록 실패. 수동으로 실행하세요:"
+    echo "     claude mcp add -s user tg_channel bun \"$SERVER_ABS\""
+  fi
+fi
+
 echo
 printf '========================================\n'
 printf '  setup complete\n'
 printf '========================================\n'
 echo "  config:  $CONFIG_PATH"
+echo "  server:  $SERVER_ABS (registered at user scope)"
 echo "  start:   ./bin/start.sh"
 echo "  stop:    ./bin/stop.sh"
