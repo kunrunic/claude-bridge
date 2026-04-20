@@ -57,6 +57,18 @@ export function parse(text: string): SlashCommand | undefined {
   }
 }
 
+export const BOT_COMMANDS: Array<{ command: string; description: string }> = [
+  { command: "sessions", description: "list active sessions" },
+  { command: "new", description: "spawn new session — /new [label] [cwd]" },
+  { command: "resume", description: "list / resume Claude session (same id)" },
+  { command: "fork", description: "resume but start new session-id (inherits context)" },
+  { command: "switch", description: "make a session active — /switch <id|label>" },
+  { command: "kill", description: "terminate a session — /kill <id|label>" },
+  { command: "current", description: "show the active session" },
+  { command: "backlog", description: "show backlog — /backlog [id|label]" },
+  { command: "status", description: "24h anomaly summary" },
+];
+
 export function help(): string {
   return [
     "Commands:",

@@ -149,6 +149,19 @@ export class TelegramClient {
     }
   }
 
+  async setCommands(
+    commands: Array<{ command: string; description: string }>,
+  ): Promise<void> {
+    try {
+      await this.bot.api.setMyCommands(commands);
+    } catch (err) {
+      anomaly.log("telegram_api_failed", {
+        op: "setMyCommands",
+        error: String(err),
+      });
+    }
+  }
+
   async getFilePath(fileId: string): Promise<string> {
     try {
       const file = await this.bot.api.getFile(fileId);

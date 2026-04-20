@@ -361,6 +361,7 @@ async function main(): Promise<void> {
 
   if (process.env.CB_POLL_DISABLED !== "1") {
     await acquirePollingLock("dispatcher.ts");
+    await tg.setCommands(slash.BOT_COMMANDS);
     await poller.start();
   }
 
