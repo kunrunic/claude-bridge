@@ -1,8 +1,20 @@
 import { startServer, type IpcMessage } from "../src/core/ipc.ts";
 import * as tmux from "../src/core/tmux/session.ts";
-import { unlinkSync, mkdirSync } from "node:fs";
+import { existsSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
+
+// Resolve to the real Claude Code binary. The dev machine may also have a
+// `cmux` wrapper at /Applications/cmux.app/.../bin/claude that shells out to
+// the real binary with extra hooks — that wrapper exits immediately inside a
+// `tmux -d` pane, which breaks the smoke check in ways that look like "MCP
+// never connected." Prefer the canonical binary if present.
+function resolveClaudeBinary(): string {
+  const canonical = join(homedir(), ".local", "bin", "claude");
+  if (existsSync(canonical)) return canonical;
+  return "claude";
+}
+const CLAUDE_BIN = resolveClaudeBinary();
 
 const socketPath = join(tmpdir(), `cb-smoke-${process.pid}.sock`);
 const sessionName = `cb-smoke-${process.pid}`;
@@ -40,7 +52,7 @@ mkdirSync(botWorkspaceDir, { recursive: true });
 
 tmux.newSession({
   name: sessionName,
-  command: `claude --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels --channels server:tg_channel`,
+  command: `${CLAUDE_BIN} --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels --channels server:tg_channel`,
   cwd: botWorkspaceDir,
   env: {
     CB_DISPATCHER_SOCKET: socketPath,
