@@ -34,6 +34,7 @@ const ReplyArgs = z.object({
   chat_id: z.string(),
   text: z.string(),
   reply_to: z.string().optional(),
+  reply_to_mode: z.enum(["off", "first", "all"]).default("all"),
   files: z.array(z.string()).default([]),
   format: z.enum(["text", "markdownv2"]).default("text"),
   split: z.enum(["newline", "length"]).default("newline"),
@@ -257,6 +258,12 @@ async function main(): Promise<void> {
             chat_id: { type: "string" },
             text: { type: "string" },
             reply_to: { type: "string" },
+            reply_to_mode: {
+              type: "string",
+              enum: ["off", "first", "all"],
+              description:
+                "How reply_to applies to split chunks. off=no threading, first=chunk 1 only, all=every chunk quotes original (default; best for multi-turn context).",
+            },
             files: {
               type: "array",
               items: { type: "string" },
@@ -266,6 +273,11 @@ async function main(): Promise<void> {
               type: "string",
               enum: ["text", "markdownv2"],
               description: "Rendering mode. Default text.",
+            },
+            split: {
+              type: "string",
+              enum: ["newline", "length"],
+              description: "Chunk strategy for >4096 char text. newline=prefer line boundaries (default), length=hard cut.",
             },
           },
           required: ["chat_id", "text"],
@@ -337,10 +349,16 @@ async function main(): Promise<void> {
             args.split === "newline"
               ? chunkByNewline(args.text, TG_TEXT_LIMIT)
               : chunkByLength(args.text, TG_TEXT_LIMIT);
+          const useReplyTo = (i: number): boolean => {
+            if (!replyTo) return false;
+            if (args.reply_to_mode === "off") return false;
+            if (args.reply_to_mode === "first") return i === 0;
+            return true;
+          };
           const sentIds: number[] = [];
           for (let i = 0; i < chunks.length; i++) {
             const id = await tg.sendMessage(args.chat_id, chunks[i]!, {
-              ...(i === 0 && replyTo ? { replyTo } : {}),
+              ...(useReplyTo(i) ? { replyTo } : {}),
               format: args.format,
             });
             sentIds.push(id);
