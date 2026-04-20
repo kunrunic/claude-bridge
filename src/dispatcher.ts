@@ -39,9 +39,8 @@ import { existsSync } from "node:fs";
 
 const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
-const DEV_WARNING_POLL_MS = 200;
-const DEV_WARNING_TIMEOUT_MS = 10_000;
-const DEV_WARNING_MARKER = "WARNING: Loading development channels";
+const TRUST_DIALOG_POLL_MS = 200;
+const TRUST_DIALOG_TIMEOUT_MS = 10_000;
 const TRUST_DIALOG_MARKER = "I trust this folder";
 const BLOCKED_TOOLS = [
   "mcp__plugin_telegram_telegram__reply",
@@ -150,12 +149,12 @@ async function main(): Promise<void> {
   }
 
   function confirmTrustDialog(tmuxName: string, sessionId: string): void {
-    const deadline = Date.now() + DEV_WARNING_TIMEOUT_MS;
+    const deadline = Date.now() + TRUST_DIALOG_TIMEOUT_MS;
     const poll = (): void => {
       if (Date.now() > deadline) return;
       let pane = "";
       try { pane = tmux.capturePane(tmuxName, 40); } catch {
-        setTimeout(poll, DEV_WARNING_POLL_MS); return;
+        setTimeout(poll, TRUST_DIALOG_POLL_MS); return;
       }
       if (pane.includes(TRUST_DIALOG_MARKER)) {
         try { tmux.sendKeys(tmuxName, "", true); } catch (err) {
@@ -163,44 +162,9 @@ async function main(): Promise<void> {
         }
         return;
       }
-      setTimeout(poll, DEV_WARNING_POLL_MS);
+      setTimeout(poll, TRUST_DIALOG_POLL_MS);
     };
-    setTimeout(poll, DEV_WARNING_POLL_MS);
-  }
-
-  function confirmDevWarning(tmuxName: string, sessionId: string): void {
-    const deadline = Date.now() + DEV_WARNING_TIMEOUT_MS;
-    const poll = (): void => {
-      if (Date.now() > deadline) {
-        anomaly.log("session_spawn_failed", {
-          op: "dev-warning-timeout",
-          session: sessionId,
-          timeoutMs: DEV_WARNING_TIMEOUT_MS,
-        });
-        return;
-      }
-      let pane = "";
-      try {
-        pane = tmux.capturePane(tmuxName, 40);
-      } catch {
-        setTimeout(poll, DEV_WARNING_POLL_MS);
-        return;
-      }
-      if (pane.includes(DEV_WARNING_MARKER)) {
-        try {
-          tmux.sendKeys(tmuxName, "", true);
-        } catch (err) {
-          anomaly.log("session_spawn_failed", {
-            op: "dev-warning-confirm",
-            session: sessionId,
-            error: String(err),
-          });
-        }
-        return;
-      }
-      setTimeout(poll, DEV_WARNING_POLL_MS);
-    };
-    setTimeout(poll, DEV_WARNING_POLL_MS);
+    setTimeout(poll, TRUST_DIALOG_POLL_MS);
   }
 
   const spawnCfg: core.SpawnConfig = {
@@ -219,7 +183,6 @@ async function main(): Promise<void> {
         cfg: spawnCfg,
         onSpawned: (tmuxName, sessionId) => {
           confirmTrustDialog(tmuxName, sessionId);
-          confirmDevWarning(tmuxName, sessionId);
         },
       },
       opts,

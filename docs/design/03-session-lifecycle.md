@@ -48,13 +48,12 @@
        -e CB_SESSION_ID=s1 \
        -e CB_POLL_DISABLED=1 \
        claude --disallowedTools ... --allowedTools ... \
-       --dangerously-load-development-channels server:tg_channel
+       --channels server:tg_channel
      ```
    - 환경변수: CB_DISPATCHER_SOCKET, CB_SESSION_ID, CB_POLL_DISABLED
-   - 플래그: --disallowedTools, --allowedTools (도구 화이트리스트), --dangerously-load-development-channels
+   - 플래그: --disallowedTools, --allowedTools (도구 화이트리스트), --channels (MCP 채널 등록)
 
-3. **onSpawned 콜백** (`dispatcher.ts:220-223`)
-   - confirmDevWarning() — "Loading development channels" 메시지 자동 확인
+3. **onSpawned 콜백** (`dispatcher.ts`)
    - confirmTrustDialog() — "Trust this folder?" 프롬프트 자동 확인 (polling)
 
 4. **hello 메시지** (`server.ts:174`)

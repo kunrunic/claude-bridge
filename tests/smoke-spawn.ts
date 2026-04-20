@@ -40,7 +40,7 @@ mkdirSync(botWorkspaceDir, { recursive: true });
 
 tmux.newSession({
   name: sessionName,
-  command: `claude --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels server:tg_channel`,
+  command: `claude --disallowedTools ${DENY} --allowedTools ${ALLOW} --channels server:tg_channel`,
   cwd: botWorkspaceDir,
   env: {
     CB_DISPATCHER_SOCKET: socketPath,

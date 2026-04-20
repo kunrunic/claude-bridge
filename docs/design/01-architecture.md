@@ -74,7 +74,7 @@ MCP stdio 채널 기반, 멀티 세션을 지원하는 Telegram ↔ Claude Code 
 ## 외부 의존
 
 - **tmux** (`src/core/tmux/session.ts`) — new-session, kill-session, send-keys, capture-pane 래퍼 (`session.ts:27-101`)
-- **Claude Code CLI** — `claude --disallowedTools ... --allowedTools ... --dangerously-load-development-channels server:tg_channel` 명령어로 실행 (`dispatcher-core.ts:51-53`)
+- **Claude Code CLI** — `claude --disallowedTools ... --allowedTools ... --channels server:tg_channel` 명령어로 실행 (`dispatcher-core.ts:51-53`)
 - **파일 시스템**
   - `~/.claude/projects/*.jsonl` — Claude Code 세션 파일 (복원 용)
   - `~/.claude-bridge/workspaces/` — 브리지 세션 cwd 격리 디렉토리 (`dispatcher.ts:64`)
