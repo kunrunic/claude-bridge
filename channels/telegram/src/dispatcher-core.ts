@@ -27,20 +27,31 @@ export type SpawnDeps = {
   onSpawned?: (tmuxName: string, sessionId: string) => void;
 };
 
+export type SpawnOptions = {
+  label?: string;
+  cwd?: string;
+  resumeId?: string;
+  forkSession?: boolean;
+};
+
 export function spawnSession(
   deps: SpawnDeps,
-  label?: string,
+  opts: SpawnOptions = {},
 ): { id: string; label: string } {
-  const session = deps.registry.create(label);
+  const session = deps.registry.create(opts.label);
+  const cwd = opts.cwd ?? deps.cfg.botWorkspaceDir;
   try {
     const denyArg = deps.cfg.blockedTools.join(",");
     const allowArg = deps.cfg.allowedTools.join(",");
+    const resumeArgs = opts.resumeId
+      ? ` --resume ${opts.resumeId}${opts.forkSession ? " --fork-session" : ""}`
+      : "";
     deps.tmux.newSession({
       name: session.tmuxName,
       command:
-        `claude --disallowedTools ${denyArg} --allowedTools ${allowArg} ` +
+        `claude --disallowedTools ${denyArg} --allowedTools ${allowArg}${resumeArgs} ` +
         `--dangerously-load-development-channels server:${deps.cfg.channelName}`,
-      cwd: deps.cfg.botWorkspaceDir,
+      cwd,
       env: {
         CB_DISPATCHER_SOCKET: deps.cfg.socketPath,
         CB_SESSION_ID: session.id,
@@ -75,7 +86,12 @@ export function killSession(deps: KillDeps, target: string): boolean {
 
 export type HandleSlashDeps = {
   registry: Registry;
-  spawn: (label?: string) => { id: string; label: string };
+  spawn: (opts: { label?: string; cwd?: string }) => {
+    id: string;
+    label: string;
+  };
+  resume: (target: string, fork: boolean) => string;
+  listRecent: () => string;
   kill: (target: string) => boolean;
   renderStatus: () => string;
 };
@@ -98,11 +114,22 @@ export function handleSlash(
     }
     case "new": {
       try {
-        const r = deps.spawn(cmd.label);
+        const opts: { label?: string; cwd?: string } = {};
+        if (cmd.label !== undefined) opts.label = cmd.label;
+        if (cmd.cwd !== undefined) opts.cwd = cmd.cwd;
+        const r = deps.spawn(opts);
         return `spawned ${r.id} (${r.label})`;
       } catch (err) {
         return `spawn failed: ${String(err)}`;
       }
+    }
+    case "resume": {
+      if (!cmd.target) return deps.listRecent();
+      return deps.resume(cmd.target, false);
+    }
+    case "fork": {
+      if (!cmd.target) return deps.listRecent();
+      return deps.resume(cmd.target, true);
     }
     case "switch": {
       const s =

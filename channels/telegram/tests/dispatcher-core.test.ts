@@ -53,12 +53,52 @@ describe("spawnSession", () => {
   test("creates session, spawns tmux, marks spawning", () => {
     const registry = new Registry();
     const tmux = fakeTmux();
-    const r = spawnSession({ registry, tmux, cfg }, "backend");
+    const r = spawnSession({ registry, tmux, cfg }, { label: "backend" });
     expect(r.label).toBe("backend");
     expect(tmux.spawned.length).toBe(1);
     expect(tmux.spawned[0]!.cwd).toBe("/tmp/bot-ws");
     const s = registry.get(r.id)!;
     expect(s.state).toBe("spawning");
+  });
+
+  test("custom cwd overrides default", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    spawnSession({ registry, tmux, cfg }, { cwd: "/some/repo" });
+    expect(tmux.spawned[0]!.cwd).toBe("/some/repo");
+  });
+
+  test("resumeId adds --resume flag", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    const captured: string[] = [];
+    const instrumentedTmux: typeof tmux = Object.assign(tmux, {
+      newSession: (opts: { command: string; name: string; cwd?: string; env?: Record<string, string> }) => {
+        captured.push(opts.command);
+      },
+    });
+    spawnSession({ registry, tmux: instrumentedTmux, cfg }, {
+      resumeId: "abc-123",
+    });
+    expect(captured[0]).toMatch(/--resume abc-123/);
+    expect(captured[0]).not.toMatch(/--fork-session/);
+  });
+
+  test("forkSession adds --fork-session when resumeId set", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    const captured: string[] = [];
+    const instrumented = Object.assign(tmux, {
+      newSession: (opts: { command: string; name: string; cwd?: string; env?: Record<string, string> }) => {
+        captured.push(opts.command);
+      },
+    });
+    spawnSession({ registry, tmux: instrumented, cfg }, {
+      resumeId: "abc-123",
+      forkSession: true,
+    });
+    expect(captured[0]).toMatch(/--resume abc-123/);
+    expect(captured[0]).toMatch(/--fork-session/);
   });
 
   test("rolls back registry when tmux fails", () => {
@@ -79,7 +119,7 @@ describe("spawnSession", () => {
       cfg,
       onSpawned: (tmuxName, sessionId) => calls.push([tmuxName, sessionId]),
     };
-    spawnSession(deps, "alpha");
+    spawnSession(deps, { label: "alpha" });
     expect(calls.length).toBe(1);
   });
 });
@@ -119,19 +159,33 @@ describe("killSession", () => {
 });
 
 describe("handleSlash", () => {
-  function makeDeps(): HandleSlashDeps & {
-    spawnCalls: Array<string | undefined>;
+  type TestDeps = HandleSlashDeps & {
+    spawnCalls: Array<{ label?: string; cwd?: string }>;
+    resumeCalls: Array<{ target: string; fork: boolean }>;
     killCalls: string[];
-  } {
+    listRecentCount: { n: number };
+  };
+
+  function makeDeps(): TestDeps {
     const registry = new Registry();
-    const spawnCalls: Array<string | undefined> = [];
+    const spawnCalls: Array<{ label?: string; cwd?: string }> = [];
+    const resumeCalls: Array<{ target: string; fork: boolean }> = [];
     const killCalls: string[] = [];
+    const listRecentCount = { n: 0 };
     const deps: HandleSlashDeps = {
       registry,
-      spawn: (label) => {
-        spawnCalls.push(label);
-        const s = registry.create(label);
+      spawn: (opts) => {
+        spawnCalls.push(opts);
+        const s = registry.create(opts.label);
         return { id: s.id, label: s.label };
+      },
+      resume: (target, fork) => {
+        resumeCalls.push({ target, fork });
+        return fork ? `forked ${target}` : `resumed ${target}`;
+      },
+      listRecent: () => {
+        listRecentCount.n += 1;
+        return "RECENT_LIST";
       },
       kill: (target) => {
         killCalls.push(target);
@@ -142,7 +196,12 @@ describe("handleSlash", () => {
       },
       renderStatus: () => "STATUS",
     };
-    return Object.assign(deps, { spawnCalls, killCalls });
+    return Object.assign(deps, {
+      spawnCalls,
+      resumeCalls,
+      killCalls,
+      listRecentCount,
+    });
   }
 
   test("/sessions empty", () => {
@@ -155,7 +214,13 @@ describe("handleSlash", () => {
     const deps = makeDeps();
     const r = handleSlash(deps, { kind: "new", label: "backend" });
     expect(r).toMatch(/spawned/);
-    expect(deps.spawnCalls).toEqual(["backend"]);
+    expect(deps.spawnCalls).toEqual([{ label: "backend" }]);
+  });
+
+  test("/new passes cwd through", () => {
+    const deps = makeDeps();
+    handleSlash(deps, { kind: "new", label: "backend", cwd: "/tmp/x" });
+    expect(deps.spawnCalls[0]).toEqual({ label: "backend", cwd: "/tmp/x" });
   });
 
   test("/new reports spawn failure cleanly", () => {
@@ -166,6 +231,27 @@ describe("handleSlash", () => {
     const r = handleSlash(deps, { kind: "new" });
     expect(r).toMatch(/spawn failed/);
     expect(r).toMatch(/boom/);
+  });
+
+  test("/resume no arg → listRecent", () => {
+    const deps = makeDeps();
+    const r = handleSlash(deps, { kind: "resume" });
+    expect(r).toBe("RECENT_LIST");
+    expect(deps.listRecentCount.n).toBe(1);
+  });
+
+  test("/resume with target → resume (fork=false)", () => {
+    const deps = makeDeps();
+    const r = handleSlash(deps, { kind: "resume", target: "2" });
+    expect(r).toBe("resumed 2");
+    expect(deps.resumeCalls).toEqual([{ target: "2", fork: false }]);
+  });
+
+  test("/fork with target → resume (fork=true)", () => {
+    const deps = makeDeps();
+    const r = handleSlash(deps, { kind: "fork", target: "3" });
+    expect(r).toBe("forked 3");
+    expect(deps.resumeCalls).toEqual([{ target: "3", fork: true }]);
   });
 
   test("/switch by label", () => {

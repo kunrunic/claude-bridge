@@ -29,6 +29,13 @@ import {
   releasePollingLock,
 } from "./lifecycle.ts";
 import * as core from "./dispatcher-core.ts";
+import {
+  findSessions,
+  formatSessionList,
+  getSessionCwd,
+  type SessionInfo,
+} from "./sessions.ts";
+import { existsSync } from "node:fs";
 
 const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
@@ -204,7 +211,7 @@ async function main(): Promise<void> {
     botWorkspaceDir,
   };
 
-  const spawnSession = (label?: string) =>
+  const spawnSession = (opts: core.SpawnOptions = {}) =>
     core.spawnSession(
       {
         registry,
@@ -215,15 +222,64 @@ async function main(): Promise<void> {
           confirmDevWarning(tmuxName, sessionId);
         },
       },
-      label,
+      opts,
     );
 
   const killSession = (target: string): boolean =>
     core.killSession({ registry, tmux, sockets }, target);
 
+  let pickerCache: SessionInfo[] = [];
+
+  const listRecent = (): string => {
+    pickerCache = findSessions(8);
+    return formatSessionList(pickerCache);
+  };
+
+  const resumePicked = (target: string, fork: boolean): string => {
+    let info: SessionInfo | undefined;
+    if (/^\d+$/.test(target)) {
+      const idx = Number(target) - 1;
+      if (idx < 0 || idx >= pickerCache.length) {
+        return `pick index out of range. run /resume first to refresh the list.`;
+      }
+      info = pickerCache[idx];
+    } else {
+      info = pickerCache.find((s) => s.id === target || s.id.startsWith(target));
+      if (!info) {
+        const all = findSessions(64);
+        info = all.find((s) => s.id === target || s.id.startsWith(target));
+      }
+    }
+    if (!info) return `no such session: ${target}`;
+    const cwd = getSessionCwd(info.id) ?? botWorkspaceDir;
+    if (!existsSync(cwd)) {
+      return `session cwd missing on disk: ${cwd}`;
+    }
+    try {
+      const spawnOpts: core.SpawnOptions = {
+        cwd,
+        resumeId: info.id,
+      };
+      if (info.project) spawnOpts.label = info.project;
+      if (fork) spawnOpts.forkSession = true;
+      const r = spawnSession(spawnOpts);
+      const verb = fork ? "forked" : "resumed";
+      return `${verb} ${r.id} (${r.label}) from ${info.project} · ${info.title}`;
+    } catch (err) {
+      return `spawn failed: ${String(err)}`;
+    }
+  };
+
   const handleSlash = (cmd: slash.SlashCommand, _chatId: string): string =>
     core.handleSlash(
-      { registry, spawn: spawnSession, kill: killSession, renderStatus },
+      {
+        registry,
+        spawn: spawnSession,
+        resume: resumePicked,
+        listRecent,
+        kill: killSession,
+        renderStatus,
+      },
       cmd,
     );
 

@@ -55,6 +55,28 @@ describe("slash parser", () => {
   test("/new no label", () => {
     expect(slash.parse("/new")).toEqual({ kind: "new" });
   });
+  test("/new label + cwd", () => {
+    expect(slash.parse("/new backend /tmp/x")).toEqual({
+      kind: "new",
+      label: "backend",
+      cwd: "/tmp/x",
+    });
+  });
+  test("/new single arg starting with / → cwd only", () => {
+    expect(slash.parse("/new /tmp/x")).toEqual({ kind: "new", cwd: "/tmp/x" });
+  });
+  test("/resume no arg", () => {
+    expect(slash.parse("/resume")).toEqual({ kind: "resume" });
+  });
+  test("/resume with index", () => {
+    expect(slash.parse("/resume 3")).toEqual({ kind: "resume", target: "3" });
+  });
+  test("/fork no arg", () => {
+    expect(slash.parse("/fork")).toEqual({ kind: "fork" });
+  });
+  test("/fork with index", () => {
+    expect(slash.parse("/fork 2")).toEqual({ kind: "fork", target: "2" });
+  });
   test("/switch requires arg", () => {
     expect(slash.parse("/switch")).toBeUndefined();
     expect(slash.parse("/switch s2")).toEqual({ kind: "switch", target: "s2" });
