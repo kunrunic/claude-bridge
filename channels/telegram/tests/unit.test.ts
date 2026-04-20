@@ -4,6 +4,9 @@ import * as slash from "../src/slash.ts";
 import { observe } from "../src/observer.ts";
 import { CALLBACK_RE, REPLY_RE } from "../src/permissions.ts";
 import { CONFLICT_RE } from "../src/telegram/poller.ts";
+import { assertSendable, chunkByNewline } from "../src/server.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 describe("registry", () => {
   test("create + active pointer", () => {
@@ -97,6 +100,48 @@ describe("permission regexes", () => {
   test("invalid callback ignored", () => {
     expect(CALLBACK_RE.exec("perm:huh:abcde")).toBeNull();
     expect(CALLBACK_RE.exec("perm:allow:abcl0")).toBeNull();
+  });
+});
+
+describe("chunkByNewline", () => {
+  test("short text → 1 chunk", () => {
+    expect(chunkByNewline("hello", 100)).toEqual(["hello"]);
+  });
+  test("splits on newline boundary", () => {
+    const s = "line1\nline2\nline3";
+    const out = chunkByNewline(s, 12);
+    expect(out).toEqual(["line1\nline2\n", "line3"]);
+  });
+  test("single line longer than limit → hard split", () => {
+    const out = chunkByNewline("aaaaaaaaaa", 4);
+    expect(out).toEqual(["aaaa", "aaaa", "aa"]);
+  });
+  test("preserves paragraph boundaries over absolute cut", () => {
+    const s = "aaa\n" + "b".repeat(10) + "\nccc";
+    const out = chunkByNewline(s, 12);
+    expect(out[0]).toBe("aaa\n");
+    expect(out[1]).toBe("b".repeat(10) + "\n");
+  });
+});
+
+describe("assertSendable", () => {
+  test("allows normal paths", () => {
+    expect(() => assertSendable("/tmp/report.png")).not.toThrow();
+  });
+  test("blocks ~/.claude-bridge contents", () => {
+    expect(() =>
+      assertSendable(join(homedir(), ".claude-bridge", "config.json")),
+    ).toThrow(/protected/);
+  });
+  test("blocks ~/.claude/channels contents", () => {
+    expect(() =>
+      assertSendable(join(homedir(), ".claude", "channels", "telegram", ".env")),
+    ).toThrow(/protected/);
+  });
+  test("resolves .. traversal", () => {
+    expect(() =>
+      assertSendable(join(homedir(), ".claude-bridge", "..", ".claude-bridge", "x")),
+    ).toThrow(/protected/);
   });
 });
 

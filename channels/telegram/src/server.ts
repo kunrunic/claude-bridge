@@ -6,6 +6,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { statSync } from "node:fs";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
 import { loadConfig } from "./config.ts";
 import { TelegramClient } from "./telegram/client.ts";
 import { Poller } from "./telegram/poller.ts";
@@ -34,6 +36,7 @@ const ReplyArgs = z.object({
   reply_to: z.string().optional(),
   files: z.array(z.string()).default([]),
   format: z.enum(["text", "markdownv2"]).default("text"),
+  split: z.enum(["newline", "length"]).default("newline"),
 });
 
 const ReactArgs = z.object({
@@ -53,13 +56,56 @@ const DownloadArgs = z.object({
   file_id: z.string(),
 });
 
-function chunkByLength(s: string, limit: number): string[] {
+export function chunkByLength(s: string, limit: number): string[] {
   if (s.length <= limit) return [s];
   const out: string[] = [];
   for (let i = 0; i < s.length; i += limit) {
     out.push(s.slice(i, i + limit));
   }
   return out;
+}
+
+export function chunkByNewline(s: string, limit: number): string[] {
+  if (s.length <= limit) return [s];
+  const out: string[] = [];
+  const lines = s.split(/(\n)/);
+  let buf = "";
+  for (const part of lines) {
+    if (buf.length + part.length > limit) {
+      if (buf) out.push(buf);
+      if (part.length > limit) {
+        for (let i = 0; i < part.length; i += limit) {
+          const slice = part.slice(i, i + limit);
+          if (i + limit >= part.length) {
+            buf = slice;
+          } else {
+            out.push(slice);
+            buf = "";
+          }
+        }
+      } else {
+        buf = part;
+      }
+    } else {
+      buf += part;
+    }
+  }
+  if (buf) out.push(buf);
+  return out.length ? out : [""];
+}
+
+const PROTECTED_PREFIXES = [
+  resolve(homedir(), ".claude-bridge"),
+  resolve(homedir(), ".claude", "channels"),
+];
+
+export function assertSendable(absPath: string): void {
+  const p = resolve(absPath);
+  for (const root of PROTECTED_PREFIXES) {
+    if (p === root || p.startsWith(root + "/")) {
+      throw new Error(`refuse to send protected path: ${p}`);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -278,6 +324,7 @@ async function main(): Promise<void> {
           const args = ReplyArgs.parse(rawArgs);
           assertAllowedChat(config, args.chat_id);
           for (const f of args.files) {
+            assertSendable(f);
             const st = statSync(f);
             if (st.size > MAX_ATTACHMENT_BYTES) {
               throw new Error(
@@ -286,7 +333,10 @@ async function main(): Promise<void> {
             }
           }
           const replyTo = args.reply_to ? Number(args.reply_to) : undefined;
-          const chunks = chunkByLength(args.text, TG_TEXT_LIMIT);
+          const chunks =
+            args.split === "newline"
+              ? chunkByNewline(args.text, TG_TEXT_LIMIT)
+              : chunkByLength(args.text, TG_TEXT_LIMIT);
           const sentIds: number[] = [];
           for (let i = 0; i < chunks.length; i++) {
             const id = await tg.sendMessage(args.chat_id, chunks[i]!, {
@@ -384,11 +434,13 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  anomaly.log("anomaly_self_error", {
-    where: "server.main",
-    error: String(err),
+if (import.meta.main) {
+  main().catch((err) => {
+    anomaly.log("anomaly_self_error", {
+      where: "server.main",
+      error: String(err),
+    });
+    console.error(err);
+    process.exit(1);
   });
-  console.error(err);
-  process.exit(1);
-});
+}
