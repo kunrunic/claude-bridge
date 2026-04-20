@@ -357,10 +357,11 @@ async function main(): Promise<void> {
           };
           const sentIds: number[] = [];
           for (let i = 0; i < chunks.length; i++) {
-            const id = await tg.sendMessage(args.chat_id, chunks[i]!, {
-              ...(useReplyTo(i) ? { replyTo } : {}),
+            const opts: { replyTo?: number; format: typeof args.format } = {
               format: args.format,
-            });
+            };
+            if (useReplyTo(i) && replyTo !== undefined) opts.replyTo = replyTo;
+            const id = await tg.sendMessage(args.chat_id, chunks[i]!, opts);
             sentIds.push(id);
           }
           const fileReply = replyTo ?? sentIds[0];

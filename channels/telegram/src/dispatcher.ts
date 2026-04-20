@@ -28,6 +28,7 @@ import {
   installShutdownHandlers,
   releasePollingLock,
 } from "./lifecycle.ts";
+import * as core from "./dispatcher-core.ts";
 
 const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
@@ -195,98 +196,36 @@ async function main(): Promise<void> {
     setTimeout(poll, DEV_WARNING_POLL_MS);
   }
 
-  function spawnSession(label?: string): { id: string; label: string } {
-    const session = registry.create(label);
-    try {
-      const denyArg = BLOCKED_TOOLS.join(",");
-      const allowArg = ALLOWED_TOOLS.join(",");
-      tmux.newSession({
-        name: session.tmuxName,
-        command: `claude --disallowedTools ${denyArg} --allowedTools ${allowArg} --dangerously-load-development-channels server:${CHANNEL_NAME}`,
-        cwd: botWorkspaceDir,
-        env: {
-          CB_DISPATCHER_SOCKET: socketPath,
-          CB_SESSION_ID: session.id,
-          CB_POLL_DISABLED: "1",
+  const spawnCfg: core.SpawnConfig = {
+    channelName: CHANNEL_NAME,
+    blockedTools: BLOCKED_TOOLS,
+    allowedTools: ALLOWED_TOOLS,
+    socketPath,
+    botWorkspaceDir,
+  };
+
+  const spawnSession = (label?: string) =>
+    core.spawnSession(
+      {
+        registry,
+        tmux,
+        cfg: spawnCfg,
+        onSpawned: (tmuxName, sessionId) => {
+          confirmTrustDialog(tmuxName, sessionId);
+          confirmDevWarning(tmuxName, sessionId);
         },
-      });
-    } catch (err) {
-      registry.remove(session.id);
-      throw err;
-    }
-    registry.updateState(session.id, { state: "spawning" });
-    confirmTrustDialog(session.tmuxName, session.id);
-    confirmDevWarning(session.tmuxName, session.id);
-    return { id: session.id, label: session.label };
-  }
+      },
+      label,
+    );
 
-  function killSession(target: string): boolean {
-    const session =
-      registry.get(target) ?? registry.getByLabel(target);
-    if (!session) return false;
-    tmux.killSession(session.tmuxName);
-    const ls = session.socketId ? sockets.get(session.socketId) : undefined;
-    ls?.close();
-    registry.remove(session.id);
-    return true;
-  }
+  const killSession = (target: string): boolean =>
+    core.killSession({ registry, tmux, sockets }, target);
 
-  function handleSlash(
-    cmd: slash.SlashCommand,
-    chatId: string,
-  ): string {
-    switch (cmd.kind) {
-      case "sessions": {
-        const list = registry.list();
-        if (list.length === 0) return "no sessions. /new to start.";
-        const active = registry.active();
-        return list
-          .map((s) => {
-            const mark = active && active.id === s.id ? "▶" : "  ";
-            return `${mark} ${s.id} (${s.label}) — ${s.state}/${s.signal}`;
-          })
-          .join("\n");
-      }
-      case "new": {
-        try {
-          const r = spawnSession(cmd.label);
-          return `spawned ${r.id} (${r.label})`;
-        } catch (err) {
-          return `spawn failed: ${String(err)}`;
-        }
-      }
-      case "switch": {
-        const s =
-          registry.get(cmd.target) ?? registry.getByLabel(cmd.target);
-        if (!s) return `no such session: ${cmd.target}`;
-        registry.setActive(s.id);
-        const missed = s.backlog.length;
-        return `▶ switched to ${s.label}${missed ? ` · ${missed} backlog msg(s)` : ""}`;
-      }
-      case "kill": {
-        return killSession(cmd.target)
-          ? `killed ${cmd.target}`
-          : `no such session: ${cmd.target}`;
-      }
-      case "current": {
-        const a = registry.active();
-        return a ? `active: ${a.label}` : "no active session";
-      }
-      case "backlog": {
-        const s =
-          cmd.target
-            ? (registry.get(cmd.target) ?? registry.getByLabel(cmd.target))
-            : registry.active();
-        if (!s) return "no such session";
-        return s.backlog.length === 0
-          ? `(${s.label}) no backlog`
-          : `(${s.label}) backlog:\n${s.backlog.slice(-20).join("\n")}`;
-      }
-      case "status": {
-        return renderStatus();
-      }
-    }
-  }
+  const handleSlash = (cmd: slash.SlashCommand, _chatId: string): string =>
+    core.handleSlash(
+      { registry, spawn: spawnSession, kill: killSession, renderStatus },
+      cmd,
+    );
 
   function renderStatus(): string {
     const WINDOW_MS = 24 * 60 * 60 * 1000;

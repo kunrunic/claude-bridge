@@ -43,7 +43,10 @@ export type AnomalyKind =
   | "telegram_api_failed"
   | "tmux_capture_failed"
   | "token_collision_detected"
-  | "anomaly_self_error";
+  | "anomaly_self_error"
+  | "shutdown"
+  | "stale_instance_evicted"
+  | "orphan_detected";
 
 export function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void {
   try {
