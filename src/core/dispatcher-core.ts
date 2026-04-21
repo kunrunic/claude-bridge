@@ -155,15 +155,5 @@ export function handleSlash(
         ? `killed ${cmd.target}`
         : `no such session: ${cmd.target}`;
     }
-    case "backlog": {
-      const s = cmd.target
-        ? (deps.registry.get(cmd.target) ??
-          deps.registry.getByLabel(cmd.target))
-        : deps.registry.active();
-      if (!s) return "no such session";
-      return s.backlog.length === 0
-        ? `(${s.label}) no backlog`
-        : `(${s.label}) backlog:\n${s.backlog.slice(-20).join("\n")}`;
-    }
   }
 }

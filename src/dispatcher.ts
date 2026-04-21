@@ -106,6 +106,23 @@ async function main(): Promise<void> {
     serverAbs,
   });
   reconcileOrphans(registry);
+
+  // Clean up stale pins from previous run — active pin + persisted reply pins.
+  if (config.defaultChatId) {
+    const staleActivePin = registry.getActivePin();
+    if (staleActivePin) {
+      await tg.unpinMessage(staleActivePin.chatId, staleActivePin.messageId).catch(() => {});
+      registry.setActivePin(undefined);
+    }
+    const stalePinnedReplies = registry.getPinnedReplies();
+    for (const ids of Object.values(stalePinnedReplies)) {
+      for (const mid of ids) {
+        await tg.unpinMessage(config.defaultChatId, mid).catch(() => {});
+      }
+    }
+    registry.clearPinnedReplies();
+  }
+
   registry.setPersistPath(paths.registryPath);
   registry.setTmuxPrefix(TMUX_SESSION_PREFIX);
   registry.resetSeq();
@@ -123,10 +140,147 @@ async function main(): Promise<void> {
     });
   }
 
+  // Per-session count of replies sent while that session was inactive.
+  // Shown as a badge on the pin; cleared when user switches OUT of the session
+  // (read-on-leave semantics).
+  const pendingCount = new Map<string, number>();
+
+  // Telegram message IDs of inactive-session replies that have been pinned.
+  // Unpinned when user leaves that session (or session is killed).
+  const pinnedReplyIds = new Map<string, number[]>();
+
+  // Serialize all pin-related Telegram ops through one queue — concurrent
+  // calls would race on unpin/pin sequences and leave orphan pins or incorrect
+  // ordering in the chat.
+  let pinOpsQueue: Promise<void> = Promise.resolve();
+  function enqueuePinOp<T>(op: () => Promise<T>, where: string): Promise<T> {
+    const p = pinOpsQueue.then(op);
+    pinOpsQueue = p.then(
+      () => {},
+      (err) => {
+        anomaly.log("anomaly_self_error", { where, error: String(err) });
+      },
+    );
+    return p;
+  }
+
   const doUpdateActivePin = (): Promise<void> => {
-    if (!config.defaultChatId) return Promise.resolve();
-    return updateActivePin(registry, tg, config.defaultChatId);
+    const chatId = config.defaultChatId;
+    if (!chatId) return Promise.resolve();
+    return enqueuePinOp(
+      () => updateActivePin(registry, tg, chatId, pendingCount),
+      "doUpdateActivePin",
+    );
   };
+
+  function syncPinnedRepliesToRegistry(): void {
+    registry.setPinnedReplies(Object.fromEntries(pinnedReplyIds));
+  }
+
+  function pinInactiveReplies(sessionId: string, messageIds: number[]): Promise<void> {
+    if (!config.defaultChatId) return Promise.resolve();
+    const chat = config.defaultChatId;
+    return enqueuePinOp(async () => {
+      const existing = pinnedReplyIds.get(sessionId) ?? [];
+      for (const mid of messageIds) {
+        try {
+          await tg.pinMessage(chat, mid, true);
+          existing.push(mid);
+        } catch (err) {
+          anomaly.log("telegram_api_failed", {
+            op: "pinInactiveReply",
+            sessionId,
+            messageId: mid,
+            error: String(err),
+          });
+        }
+      }
+      pinnedReplyIds.set(sessionId, existing);
+      syncPinnedRepliesToRegistry();
+    }, "pinInactiveReplies");
+  }
+
+  function unpinRepliesOf(sessionId: string): Promise<void> {
+    if (!config.defaultChatId) return Promise.resolve();
+    const chat = config.defaultChatId;
+    const ids = pinnedReplyIds.get(sessionId);
+    if (!ids || ids.length === 0) return Promise.resolve();
+    pinnedReplyIds.delete(sessionId);
+    syncPinnedRepliesToRegistry();
+    return enqueuePinOp(async () => {
+      for (const mid of ids) {
+        try {
+          await tg.unpinMessage(chat, mid);
+        } catch (err) {
+          anomaly.log("telegram_api_failed", {
+            op: "unpinReplyOnLeave",
+            sessionId,
+            messageId: mid,
+            error: String(err),
+          });
+        }
+      }
+    }, "unpinRepliesOf");
+  }
+
+  // After pinning new reply messages, Telegram shows the NEWEST pin at the top
+  // of the banner. To keep the active-session summary visible on top, re-pin
+  // the summary message after each reply-pin burst (unpin → pin same message
+  // bumps its pin timestamp). Pin info is captured inside the queued op so a
+  // preceding doUpdateActivePin can update registry.activePin first.
+  function bumpActivePinToTop(): Promise<void> {
+    return enqueuePinOp(async () => {
+      const pin = registry.getActivePin();
+      if (!pin) return;
+      const { chatId, messageId } = pin;
+      try {
+        await tg.unpinMessage(chatId, messageId);
+      } catch {
+        // already unpinned or gone — swallow and continue to re-pin
+      }
+      try {
+        await tg.pinMessage(chatId, messageId, true);
+      } catch (err) {
+        anomaly.log("telegram_api_failed", {
+          op: "bumpActivePinToTop",
+          error: String(err),
+        });
+      }
+    }, "bumpActivePinToTop");
+  }
+
+  function pushSessionState(sessionId: string): void {
+    const session = registry.get(sessionId);
+    if (!session) return;
+    if (!session.socketId) return;
+    const ls = sockets.get(session.socketId);
+    if (!ls) return;
+    const active = registry.active();
+    ls.send({
+      op: "session_state",
+      session_id: sessionId,
+      is_active: active?.id === sessionId,
+      label: session.label,
+    });
+  }
+
+  function pushSessionStateToAll(): void {
+    for (const s of registry.list()) {
+      pushSessionState(s.id);
+    }
+  }
+
+  // Read-on-leave: when switching OUT of a session, its pending count + pinned
+  // reply messages are cleared (user is considered to have "read" them by
+  // having been in that session and then left).
+  function onActiveChanged(leftSessionId?: string): void {
+    if (leftSessionId) {
+      pendingCount.set(leftSessionId, 0);
+      void unpinRepliesOf(leftSessionId);
+    }
+    void doUpdateActivePin();
+    pushSessionStateToAll();
+  }
 
   const spawnCfg: core.SpawnConfig = {
     channelName: CHANNEL_NAME,
@@ -196,7 +350,7 @@ async function main(): Promise<void> {
     registry,
     tg,
     sessions,
-    doUpdateActivePin,
+    onActiveChanged,
   });
 
   const ipcServer = startServer(socketPath, (ls) => {
@@ -210,9 +364,19 @@ async function main(): Promise<void> {
             sessionId: msg.session_id,
             socketId,
           });
+          const beforeActiveId = registry.active()?.id;
           const ready = handleIpcHello(registry, msg.session_id, socketId);
-          if (ready?.kind === "spawned") announce(`✅ [${ready.label}] 준비됨 — 메시지를 보내세요`);
-          if (ready?.kind === "reconnected") announce(`🔄 [${ready.label}] 재연결됨`);
+          if (ready?.kind === "spawned") {
+            // Auto-switch to newly spawned session — user's /new implies intent to use it.
+            registry.setActive(ready.id);
+            announce(`✅ [${ready.label}] 준비됨 — 자동 전환됨`);
+            onActiveChanged(beforeActiveId);
+          } else if (ready?.kind === "reconnected") {
+            announce(`🔄 [${ready.label}] 재연결됨`);
+            pushSessionState(msg.session_id);
+          } else {
+            pushSessionState(msg.session_id);
+          }
           break;
         }
         case "permission_request":
@@ -230,9 +394,23 @@ async function main(): Promise<void> {
         case "signal":
           handleIpcSignal(registry, socketId, msg.signal);
           break;
-        case "reply_sent":
+        case "reply_sent": {
+          const session = registry.getBySocketId(socketId);
+          const active = registry.active();
+          if (session && active?.id !== session.id) {
+            const count = msg.message_ids?.length ?? 1;
+            const cur = pendingCount.get(session.id) ?? 0;
+            pendingCount.set(session.id, cur + count);
+            if (msg.message_ids && msg.message_ids.length > 0) {
+              void pinInactiveReplies(session.id, msg.message_ids);
+            }
+            // update summary content, then bump to top so banner shows active pin
+            void doUpdateActivePin();
+            void bumpActivePinToTop();
+          }
           onReplySent();
           break;
+        }
         default:
           anomaly.log("mcp_unknown_method", {
             where: "dispatcher.ipc",
@@ -244,11 +422,16 @@ async function main(): Promise<void> {
       const session = registry.getBySocketId(socketId);
       sockets.delete(socketId);
       registry.detachSocket(socketId);
-      if (session && session.state !== "dead") {
-        announce(
-          `⚠️ [${session.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
-          `재연결 실패 시 /new 또는 /resume 으로 새 세션을 시작하세요.`,
-        );
+      if (session) {
+        pendingCount.delete(session.id);
+        void unpinRepliesOf(session.id);
+        if (session.state !== "dead") {
+          announce(
+            `⚠️ [${session.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
+            `재연결 실패 시 /new 또는 /resume 으로 새 세션을 시작하세요.`,
+          );
+        }
+        void doUpdateActivePin();
       }
     });
   });
@@ -311,6 +494,15 @@ async function main(): Promise<void> {
       await tg.unpinMessage(stalePin.chatId, stalePin.messageId).catch(() => {});
       registry.setActivePin(undefined);
     }
+    if (config.defaultChatId) {
+      for (const ids of pinnedReplyIds.values()) {
+        for (const mid of ids) {
+          await tg.unpinMessage(config.defaultChatId, mid).catch(() => {});
+        }
+      }
+    }
+    pinnedReplyIds.clear();
+    registry.clearPinnedReplies();
     const kills = registry.list().map((s) => sessions.gracefulKill(s.tmuxName));
     await Promise.all(kills);
     for (const ls of sockets.values()) ls.close();

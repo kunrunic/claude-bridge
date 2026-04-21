@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import type { Registry } from "./registry.ts";
 import type { LineSocket } from "./ipc.ts";
 import * as core from "./dispatcher-core.ts";
@@ -20,6 +21,12 @@ const THEME_DIALOG_MARKER = "Choose the text style";
 const GRACEFUL_EXIT_WAIT_MS = 5_000;
 const GRACEFUL_EXIT_POLL_MS = 200;
 
+function expandHome(p: string): string {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return `${homedir()}${p.slice(1)}`;
+  return p;
+}
+
 // tmux subset needed by SessionManager
 export type SessionTmux = core.TmuxDriver & {
   capturePane(name: string, lines: number): string;
@@ -40,6 +47,19 @@ export class SessionManager {
   constructor(private readonly deps: SessionManagerDeps) {}
 
   spawn(opts: core.SpawnOptions = {}): { id: string; label: string } {
+    const expanded: core.SpawnOptions = { ...opts };
+    if (expanded.cwd) {
+      expanded.cwd = expandHome(expanded.cwd);
+      // Auto-create the workspace directory if it doesn't exist — user's /new
+      // with a path implies intent to start working there.
+      if (!existsSync(expanded.cwd)) {
+        try {
+          mkdirSync(expanded.cwd, { recursive: true });
+        } catch (err) {
+          throw new Error(`failed to create cwd ${expanded.cwd}: ${String(err)}`);
+        }
+      }
+    }
     const result = core.spawnSession(
       {
         registry: this.deps.registry,
@@ -49,7 +69,7 @@ export class SessionManager {
           this.confirmStartupDialogs(tmuxName, sessionId);
         },
       },
-      opts,
+      expanded,
     );
     scheduleSpawnTimeout(
       this.deps.registry,

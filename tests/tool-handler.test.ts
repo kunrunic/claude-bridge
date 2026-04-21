@@ -86,6 +86,67 @@ describe("ToolHandler.reply", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/reply failed/);
   });
+
+  test("활성 세션(provider=active) → prefix 없음", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: true, sessionLabel: "backend" };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    await h.handle("reply", { chat_id: "chat1", text: "hello" });
+    const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
+    expect(firstCall[1]).toBe("hello");
+  });
+
+  test("비활성 세션(provider=inactive) → ⚡ label 별도 줄 prefix 주입", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: false, sessionLabel: "backend" };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    await h.handle("reply", { chat_id: "chat1", text: "done" });
+    const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
+    expect(firstCall[1]).toBe("⚡ backend\ndone");
+  });
+
+  test("provider 없음(stand-alone) → prefix 없음", async () => {
+    const tg = fakeTg();
+    const h = new ToolHandler(tg, fakeConfig(), undefined);
+    await h.handle("reply", { chat_id: "chat1", text: "hello" });
+    const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
+    expect(firstCall[1]).toBe("hello");
+  });
+
+  test("비활성 + text 비어있음 → prefix 스킵", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: false, sessionLabel: "backend" };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    await h.handle("reply", { chat_id: "chat1", text: "" });
+    const calls = (tg.sendMessage as ReturnType<typeof mock>).mock.calls;
+    if (calls.length > 0) {
+      expect(calls[0]![1]).not.toContain("⚡ backend");
+    }
+  });
+
+  test("비활성 + label 비어있음 → prefix 스킵", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: false, sessionLabel: "" };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    await h.handle("reply", { chat_id: "chat1", text: "hello" });
+    const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
+    expect(firstCall[1]).toBe("hello");
+  });
+
+  test("message_ids 배열이 McpResult 에 포함됨 (pin 용)", async () => {
+    const tg = fakeTg();
+    const h = new ToolHandler(tg, fakeConfig());
+    const r = await h.handle("reply", { chat_id: "chat1", text: "hello" });
+    expect(r.message_ids).toEqual([100]);
+  });
+
+  test("chunked 메시지 → message_ids 배열 길이 = chunk 수", async () => {
+    let counter = 100;
+    const tg = fakeTg({ sendMessage: mock(async () => counter++) });
+    const h = new ToolHandler(tg, fakeConfig());
+    const r = await h.handle("reply", { chat_id: "chat1", text: "x".repeat(5000), split: "length" });
+    expect(r.message_ids?.length).toBeGreaterThan(1);
+  });
 });
 
 // ── react ─────────────────────────────────────────────────────────────────────

@@ -15,7 +15,6 @@ describe("Registry snapshot round-trip", () => {
     const a = r1.create("alpha");
     const b = r1.create("bravo");
     r1.setActive(b.id);
-    r1.pushBacklog(a.id, "hello");
     r1.updateState(a.id, { state: "idle", signal: "idle" });
 
     const snap = r1.snapshot();
@@ -24,7 +23,7 @@ describe("Registry snapshot round-trip", () => {
 
     expect(r2.list().length).toBe(2);
     expect(r2.active()?.label).toBe("bravo");
-    expect(r2.get(a.id)?.backlog).toEqual(["hello"]);
+    expect(r2.get(a.id)?.state).toBe("idle");
     const next = r2.create("charlie");
     expect(next.id).toBe("s3");
   });

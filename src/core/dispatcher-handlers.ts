@@ -141,7 +141,6 @@ export function handleInbound(
     content: evt.content,
     meta: evt.meta as Record<string, string>,
   });
-  registry.pushBacklog(active.id, `← ${evt.content.slice(0, 120)}`);
   return true;
 }
 

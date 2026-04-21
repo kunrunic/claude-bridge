@@ -172,14 +172,6 @@ describe("handleInbound", () => {
     expect((sent[0] as { content: string }).content).toBe("안녕하세요");
   });
 
-  test("포워딩 후 backlog에 기록", () => {
-    const r = new Registry();
-    r.create("alpha");
-    handleIpcHello(r, "s1", "sock-A");
-    const sockets = new Map<string, LineSocket>([["sock-A", fakeSocket()]]);
-    handleInbound(r, sockets, () => {}, makeInboundEvt("질문입니다"));
-    expect(r.get("s1")!.backlog[0]).toMatch(/질문입니다/);
-  });
 
   test("소켓 맵에 없는 경우 → announce 없이 false 반환", () => {
     const r = new Registry();

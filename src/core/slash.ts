@@ -2,7 +2,6 @@ export type SlashCommand =
   | { kind: "sessions" }
   | { kind: "new"; label?: string; cwd?: string }
   | { kind: "kill"; target?: string }
-  | { kind: "backlog"; target?: string }
   | { kind: "resume"; target?: string }
   | { kind: "fork"; target?: string };
 
@@ -35,8 +34,6 @@ export function parse(text: string): SlashCommand | undefined {
     }
     case "kill":
       return arg ? { kind: "kill", target: arg } : { kind: "kill" };
-    case "backlog":
-      return arg ? { kind: "backlog", target: arg } : { kind: "backlog" };
     case "resume":
       return arg ? { kind: "resume", target: arg } : { kind: "resume" };
     case "fork":
@@ -62,6 +59,5 @@ export function help(): string {
     "  /resume [N|id]       이전 Claude 세션 복원",
     "  /fork [N|id]         이전 세션 컨텍스트 상속 + 새 session-id",
     "  /kill [id|label]     세션 종료 (picker)",
-    "  /backlog [id|label]  backlog 조회",
   ].join("\n");
 }

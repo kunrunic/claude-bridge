@@ -62,6 +62,43 @@ describe("SessionManager", () => {
       expect(session!.state).toBe("spawning");
     });
 
+    test("cwd 에 ~/ 있으면 homedir 로 확장", () => {
+      const registry = new Registry();
+      const tmux = fakeTmux();
+      const deps: SessionManagerDeps = {
+        registry,
+        tmux,
+        sockets: new Map(),
+        spawnCfg: makeSpawnConfig(),
+        announce: () => {},
+      };
+      const manager = new SessionManager(deps);
+      // Use an actually-existing directory under $HOME: the home dir itself.
+      // Expanding ~ to homedir should pass existsSync.
+      expect(() => manager.spawn({ label: "x", cwd: "~" })).not.toThrow();
+    });
+
+    test("cwd 가 없으면 자동 생성 (mkdir -p)", () => {
+      const { mkdtempSync, rmSync, existsSync } = require("node:fs");
+      const { tmpdir } = require("node:os");
+      const { join } = require("node:path");
+      const base = mkdtempSync(join(tmpdir(), "cb-spawn-"));
+      const newCwd = join(base, "nested", "dir");
+      const registry = new Registry();
+      const tmux = fakeTmux();
+      const deps: SessionManagerDeps = {
+        registry,
+        tmux,
+        sockets: new Map(),
+        spawnCfg: makeSpawnConfig(),
+        announce: () => {},
+      };
+      const manager = new SessionManager(deps);
+      manager.spawn({ label: "x", cwd: newCwd });
+      expect(existsSync(newCwd)).toBe(true);
+      rmSync(base, { recursive: true, force: true });
+    });
+
     test("spawn timeout fires if hello never arrives", async () => {
       const registry = new Registry();
       const tmux = fakeTmux();

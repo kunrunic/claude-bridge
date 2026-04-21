@@ -312,19 +312,4 @@ describe("handleSlash", () => {
     expect(deps.killCalls).toHaveLength(0);
   });
 
-  test("/backlog empty", () => {
-    const deps = makeDeps();
-    deps.registry.create("alpha");
-    const r = handleSlash(deps, { kind: "backlog" });
-    expect(r).toMatch(/no backlog/);
-  });
-
-  test("/backlog populated", () => {
-    const deps = makeDeps();
-    const s = deps.registry.create("alpha");
-    deps.registry.pushBacklog(s.id, "msg-a");
-    const r = handleSlash(deps, { kind: "backlog" });
-    expect(r).toMatch(/msg-a/);
-  });
-
 });

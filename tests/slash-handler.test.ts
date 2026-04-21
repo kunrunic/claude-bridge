@@ -93,7 +93,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -113,7 +113,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -131,7 +131,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -150,7 +150,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -168,7 +168,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -197,7 +197,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -225,7 +225,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -243,7 +243,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -252,6 +252,92 @@ describe("SlashHandler", () => {
       expect(tg.sendWithKeyboardCalls.length).toBe(1);
       expect(tg.sendWithKeyboardCalls[0]![1]).toMatch(/권한 설정/);
       expect((sessions.spawn as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+    });
+
+    test("{kind:'new', label, cwd} → picker 에 label/cwd preview 표시, pending 저장", async () => {
+      const registry = new Registry();
+      const tg = fakeTelegramClient();
+      const sessions = fakeSessionManager();
+      const deps: SlashHandlerDeps = {
+        registry,
+        tg,
+        sessions,
+        onActiveChanged: mock(() => {}),
+      };
+      const handler = new SlashHandler(deps);
+
+      await handler.handle({ kind: "new", label: "mylabel", cwd: "/tmp/mycwd" }, "chat1");
+
+      const kbMsg = tg.sendWithKeyboardCalls[0]![1];
+      expect(kbMsg).toContain("mylabel");
+      expect(kbMsg).toContain("/tmp/mycwd");
+    });
+
+    test("/new label/cwd → new_normal 콜백에서 spawn 인자로 전달됨", async () => {
+      const registry = new Registry();
+      const tg = fakeTelegramClient();
+      const sessions = fakeSessionManager();
+      const deps: SlashHandlerDeps = {
+        registry,
+        tg,
+        sessions,
+        onActiveChanged: mock(() => {}),
+      };
+      const handler = new SlashHandler(deps);
+
+      // Step 1: /new label cwd → pending 저장 + picker 표시
+      await handler.handle({ kind: "new", label: "mylabel", cwd: "/tmp/mycwd" }, "chat1");
+      // Step 2: 퍼미션 선택 (new_normal 클릭)
+      await handler.onSessionAction("new_normal", "", "chat1", 999);
+
+      const spawnArgs = (sessions.spawn as ReturnType<typeof mock>).mock.calls[0]![0];
+      expect(spawnArgs).toEqual({
+        skipPermissions: false,
+        label: "mylabel",
+        cwd: "/tmp/mycwd",
+      });
+    });
+
+    test("/new label → new_skip 콜백에서 skipPermissions=true 와 함께 전달", async () => {
+      const registry = new Registry();
+      const tg = fakeTelegramClient();
+      const sessions = fakeSessionManager();
+      const deps: SlashHandlerDeps = {
+        registry,
+        tg,
+        sessions,
+        onActiveChanged: mock(() => {}),
+      };
+      const handler = new SlashHandler(deps);
+
+      await handler.handle({ kind: "new", label: "test" }, "chat1");
+      await handler.onSessionAction("new_skip", "", "chat1", 999);
+
+      const spawnArgs = (sessions.spawn as ReturnType<typeof mock>).mock.calls[0]![0];
+      expect(spawnArgs).toEqual({ skipPermissions: true, label: "test" });
+    });
+
+    test("/new → cancel 시 pending 지워짐 (다음 /new 에 누적 안 됨)", async () => {
+      const registry = new Registry();
+      const tg = fakeTelegramClient();
+      const sessions = fakeSessionManager();
+      const deps: SlashHandlerDeps = {
+        registry,
+        tg,
+        sessions,
+        onActiveChanged: mock(() => {}),
+      };
+      const handler = new SlashHandler(deps);
+
+      await handler.handle({ kind: "new", label: "first" }, "chat1");
+      await handler.onSessionAction("cancel", "", "chat1", 999);
+
+      // 두 번째 /new 는 label 없음
+      await handler.handle({ kind: "new" }, "chat1");
+      await handler.onSessionAction("new_normal", "", "chat1", 1000);
+
+      const spawnArgs = (sessions.spawn as ReturnType<typeof mock>).mock.calls[0]![0];
+      expect(spawnArgs.label).toBeUndefined();
     });
 
     test("{kind:'kill', target:'s1'} → sessions.kill called", async () => {
@@ -263,7 +349,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -282,7 +368,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -301,7 +387,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -322,7 +408,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -341,7 +427,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -359,7 +445,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -379,7 +465,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -398,7 +484,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -419,7 +505,7 @@ describe("SlashHandler", () => {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: mock(async () => {}),
+        onActiveChanged: mock(() => {}),
       };
       const handler = new SlashHandler(deps);
 
@@ -432,48 +518,46 @@ describe("SlashHandler", () => {
       expect(skipPerm).toBe(true);
     });
 
-    test("pin updated when active session changes after handle", async () => {
+    test("onActiveChanged fired when active session changes after handle", async () => {
       const registry = new Registry();
       const s1 = registry.create("alpha");
       const s2 = registry.create("beta");
       registry.setActive(s1.id);
       const tg = fakeTelegramClient();
       const sessions = fakeSessionManager();
-      const updatePinMock = mock(async () => {});
+      const onActiveChanged = mock(() => {});
       const deps: SlashHandlerDeps = {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: updatePinMock,
+        onActiveChanged,
       };
       const handler = new SlashHandler(deps);
 
-      // Switch active session
       await handler.onSessionAction("switch", s2.id, "chat1", 123);
 
-      expect(updatePinMock).toHaveBeenCalled();
+      expect(onActiveChanged).toHaveBeenCalled();
     });
 
-    test("pin updated when active session changes after onSessionAction", async () => {
+    test("onActiveChanged fired when active session changes after onSessionAction", async () => {
       const registry = new Registry();
       const s1 = registry.create("alpha");
       const s2 = registry.create("beta");
       registry.setActive(s1.id);
       const tg = fakeTelegramClient();
       const sessions = fakeSessionManager();
-      const updatePinMock = mock(async () => {});
+      const onActiveChanged = mock(() => {});
       const deps: SlashHandlerDeps = {
         registry,
         tg,
         sessions,
-        doUpdateActivePin: updatePinMock,
+        onActiveChanged,
       };
       const handler = new SlashHandler(deps);
 
-      // Switch active session via action
       await handler.onSessionAction("switch", s2.id, "chat1", 123);
 
-      expect(updatePinMock).toHaveBeenCalled();
+      expect(onActiveChanged).toHaveBeenCalled();
     });
   });
 });

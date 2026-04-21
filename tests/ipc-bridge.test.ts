@@ -120,6 +120,49 @@ describe("IpcBridge", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("session_state 수신 → sessionActive/sessionLabel 반영", async () => {
+    const { dir, path } = tmpSocket();
+    const server = startServer(path, (ls) => {
+      setTimeout(() => {
+        ls.send({ op: "session_state", session_id: "s1", is_active: false, label: "backend" });
+      }, 30);
+    });
+
+    const bridge = new IpcBridge();
+    expect(bridge.sessionActive).toBe(false);
+    expect(bridge.sessionLabel).toBe("");
+
+    await bridge.connect(path, "s1", 1, { emitInbound: () => {}, sendPermissionReply: () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(bridge.sessionActive).toBe(false);
+    expect(bridge.sessionLabel).toBe("backend");
+
+    bridge.close();
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("session_state active=true → sessionActive=true", async () => {
+    const { dir, path } = tmpSocket();
+    const server = startServer(path, (ls) => {
+      setTimeout(() => {
+        ls.send({ op: "session_state", session_id: "s1", is_active: true, label: "x" });
+      }, 30);
+    });
+
+    const bridge = new IpcBridge();
+    await bridge.connect(path, "s1", 1, { emitInbound: () => {}, sendPermissionReply: () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(bridge.sessionActive).toBe(true);
+    expect(bridge.sessionLabel).toBe("x");
+
+    bridge.close();
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("onClose → 콜백 호출", async () => {
     const { dir, path } = tmpSocket();
     let closed = false;

@@ -59,14 +59,6 @@ describe("registry", () => {
     expect(r.active()?.id).toBe("s2");
   });
 
-  test("backlog cap", () => {
-    const r = new Registry();
-    r.create();
-    for (let i = 0; i < 120; i++) r.pushBacklog("s1", `msg${i}`);
-    const s = r.get("s1")!;
-    expect(s.backlog.length).toBe(100);
-    expect(s.backlog[0]).toBe("msg20");
-  });
 });
 
 describe("slash parser", () => {

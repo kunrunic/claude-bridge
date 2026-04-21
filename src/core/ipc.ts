@@ -46,6 +46,14 @@ export type IpcShutdown = {
 export type IpcReplySent = {
   op: "reply_sent";
   session_id: string;
+  message_ids?: number[];
+};
+
+export type IpcSessionState = {
+  op: "session_state";
+  session_id: string;
+  is_active: boolean;
+  label: string;
 };
 
 export type IpcMessage =
@@ -55,7 +63,8 @@ export type IpcMessage =
   | IpcPermissionReply
   | IpcSignal
   | IpcShutdown
-  | IpcReplySent;
+  | IpcReplySent
+  | IpcSessionState;
 
 export class LineSocket {
   private buf = "";

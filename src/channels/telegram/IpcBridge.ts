@@ -19,6 +19,15 @@ export class IpcBridge {
   private sessionId = "";
   private pid = 0;
   private deps: IpcBridgeDeps | undefined;
+  private sessionState: { is_active: boolean; label: string } | undefined;
+
+  get sessionActive(): boolean {
+    return this.sessionState?.is_active ?? false;
+  }
+
+  get sessionLabel(): string {
+    return this.sessionState?.label ?? "";
+  }
 
   async connect(socketPath: string, sessionId: string, pid: number, deps: IpcBridgeDeps): Promise<void> {
     this.socketPath = socketPath;
@@ -59,6 +68,12 @@ export class IpcBridge {
           break;
         case "permission_reply":
           this.deps?.sendPermissionReply(msg.request_id, msg.behavior);
+          break;
+        case "session_state":
+          this.sessionState = {
+            is_active: msg.is_active,
+            label: msg.label,
+          };
           break;
         default:
           anomaly.log("mcp_unknown_method", {

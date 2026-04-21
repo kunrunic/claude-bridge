@@ -16,16 +16,24 @@ import * as anomaly from "../../../core/anomaly.ts";
 export type McpResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+  /** Telegram message IDs sent by this tool call (reply only; for pin tracking). */
+  message_ids?: number[];
 };
 
 /**
  * ToolHandler encapsulates the MCP CallToolRequestSchema handler logic.
  * Pure dispatch based on tool name; all I/O delegated to TelegramClient.
  */
+export type SessionStateProvider = {
+  readonly sessionActive: boolean;
+  readonly sessionLabel: string;
+};
+
 export class ToolHandler {
   constructor(
     private readonly tg: TelegramClient,
     private readonly config: Config,
+    private readonly sessionStateProvider?: SessionStateProvider,
   ) {}
 
   /**
@@ -75,6 +83,15 @@ export class ToolHandler {
     const args = ReplyArgs.parse(rawArgs);
     assertAllowedChat(this.config, args.chat_id);
 
+    // If this session is inactive, prefix text with session label on its own
+    // line so the user can quickly tell which session the reply is from.
+    if (this.sessionStateProvider && !this.sessionStateProvider.sessionActive) {
+      const label = this.sessionStateProvider.sessionLabel;
+      if (label && args.text) {
+        args.text = `⚡ ${label}\n${args.text}`;
+      }
+    }
+
     // Validate file sizes
     for (const f of args.files) {
       assertSendable(f);
@@ -123,6 +140,7 @@ export class ToolHandler {
 
     return {
       content: [{ type: "text", text: `sent message_ids=${sentIds.join(",")}` }],
+      message_ids: sentIds,
     };
   }
 

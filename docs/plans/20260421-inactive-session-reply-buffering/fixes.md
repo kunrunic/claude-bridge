@@ -1,191 +1,191 @@
 # fixes.md
 
-## 1. `src/core/ipc.ts` — IPC 프로토콜 확장
+> 설계 2 (Tag-only) 기준 diff 제안.
 
-`reply_request` (MCP → dispatcher) + `reply_response` (dispatcher → MCP) 페어 추가. 기존 `reply_sent` 는 호환성 유지 (단순 신호용으로 계속 쓸 수도, 제거할 수도 있음 — 후속 결정).
+## 1. `src/core/ipc.ts` — `session_state` IPC op 추가
 
-### 제안 타입
+단방향 push. Dispatcher → MCP server 방향.
 
 ```ts
-export type IpcReplyRequest = {
-  op: "reply_request";
-  request_id: string;            // correlation id (uuid v4)
+export type IpcSessionState = {
+  op: "session_state";
   session_id: string;
-  tool: "reply" | "react" | "edit_message" | "download_attachment";
-  args: Record<string, unknown>; // 툴별 원본 args (zod 검증은 이미 MCP 측에서 완료)
+  is_active: boolean;
+  label: string;
 };
 
-export type IpcReplyResponse = {
-  op: "reply_response";
-  request_id: string;
-  status: "sent" | "buffered" | "error";
-  message_id?: number;           // status=sent 시 Telegram message_id
-  error?: string;                // status=error 시 사유
-};
+// IpcMessage union 에 추가
+export type IpcMessage =
+  | IpcHello
+  | IpcSignal
+  | IpcInbound
+  | IpcPermissionRequest
+  | IpcPermissionReply
+  | IpcReplySent
+  | IpcSessionState;   // ← 신규
 ```
 
-`IpcMessage` union 에 양쪽 추가. `LineSocket` 은 JSON line 프로토콜이라 구조 변경 없음.
+기존 메시지 타입은 변경 없음.
 
-## 2. `src/channels/telegram/tools/ToolHandler.ts` — 직접 전송 제거
-
-현재:
-```ts
-private async handleReply(rawArgs: unknown): Promise<McpResult> {
-  ...
-  const id = await this.tg.sendMessage(args.chat_id, chunks[i]!, opts);  // 직접
-  ...
-}
-```
-
-변경:
-```ts
-private async handleReply(rawArgs: unknown): Promise<McpResult> {
-  ...
-  const response = await this.ipcBridge.requestReply({
-    tool: "reply",
-    args: parsedArgs,
-  });
-  if (response.status === "error") return mcpError(response.error);
-  // response.status === "sent" or "buffered" 둘 다 Claude 입장에선 "성공"
-  return mcpOk(response.message_id ?? null);
-}
-```
-
-`ipcBridge.requestReply` 는 신규 메서드 — request_id 생성하고 response 대기 (Promise).
-
-**주의**: `react` / `edit_message` / `download_attachment` 도 같이 IPC 경유로 전환할지 결정 필요. 
-- `reply` 는 버퍼링 후보 (비활성 세션의 대화 응답)
-- `react` / `edit_message` 는 **즉시 전송이 맞음** (사용자가 이미 보낸 메시지에 대한 반응이므로 활성 여부 무관)
-- `download_attachment` 는 Telegram 전송 아니고 파일 다운로드 — 버퍼링 불필요
-
-→ **1차 범위: `reply` 만 IPC 경유**. 나머지는 직접 전송 유지. IpcBridge 에 `requestReply` 만 추가.
-
-## 3. `src/channels/telegram/IpcBridge.ts` — request/response 대기
+## 2. `src/channels/telegram/IpcBridge.ts` — 상태 캐시 + getter
 
 ```ts
-private readonly pendingRequests = new Map<string, {
-  resolve: (r: IpcReplyResponse) => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}>();
+export class IpcBridge {
+  private socket: LineSocket | undefined;
+  private closed = false;
+  // ...
+  private sessionState: { is_active: boolean; label: string } | undefined;
 
-async requestReply(
-  req: Omit<IpcReplyRequest, "op" | "request_id" | "session_id">,
-): Promise<IpcReplyResponse> {
-  if (!this.socket) throw new Error("IpcBridge not connected");
-  const request_id = randomUUID();
-  const full: IpcReplyRequest = {
-    op: "reply_request",
-    request_id,
-    session_id: this.sessionId,
-    ...req,
-  };
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      this.pendingRequests.delete(request_id);
-      reject(new Error("reply_request timeout"));
-    }, 30_000);
-    this.pendingRequests.set(request_id, { resolve, reject, timer });
-    this.socket!.send(full);
-  });
-}
-```
-
-`onMessage` 핸들러에 `reply_response` 케이스 추가 → `pendingRequests` 에서 꺼내 resolve.
-
-## 4. `src/dispatcher.ts` — 라우팅 + 버퍼
-
-```ts
-type BufferedReply = {
-  request_id: string;
-  tool: "reply";
-  args: Record<string, unknown>;
-  ts: number;
-};
-
-const pendingBySession = new Map<string, BufferedReply[]>();
-
-// IPC 서버 핸들러 확장
-ls.onMessage((msg: IpcMessage) => {
-  switch (msg.op) {
-    ...
-    case "reply_request":
-      handleReplyRequest(msg, ls);
-      break;
+  get sessionActive(): boolean {
+    return this.sessionState?.is_active ?? false;
   }
-});
 
-function handleReplyRequest(msg: IpcReplyRequest, ls: LineSocket): void {
-  const session = registry.get(msg.session_id);
-  if (!session) {
-    ls.send({
-      op: "reply_response", request_id: msg.request_id,
-      status: "error", error: "session not found",
-    });
-    return;
+  get sessionLabel(): string {
+    return this.sessionState?.label ?? "";
   }
-  const active = registry.active();
-  const isActive = active?.id === session.id;
 
-  if (isActive) {
-    // 즉시 전송
-    void executeReply(msg.args)
-      .then((message_id) => ls.send({
-        op: "reply_response", request_id: msg.request_id,
-        status: "sent", message_id,
-      }))
-      .catch((err) => ls.send({
-        op: "reply_response", request_id: msg.request_id,
-        status: "error", error: String(err),
-      }));
-  } else {
-    // 버퍼링
-    const queue = pendingBySession.get(session.id) ?? [];
-    queue.push({
-      request_id: msg.request_id,
-      tool: msg.tool,
-      args: msg.args,
-      ts: Date.now(),
-    });
-    pendingBySession.set(session.id, queue);
-    void doUpdateActivePin();  // pin count 반영
-    ls.send({
-      op: "reply_response", request_id: msg.request_id,
-      status: "buffered",
+  // onMessage 핸들러에 케이스 추가
+  private async attach(): Promise<void> {
+    // ...
+    this.socket.onMessage((msg) => {
+      switch (msg.op) {
+        case "inbound": ...
+        case "permission_reply": ...
+        case "session_state":
+          this.sessionState = {
+            is_active: msg.is_active,
+            label: msg.label,
+          };
+          break;
+        default: ...
+      }
     });
   }
 }
+```
 
-async function executeReply(args: Record<string, unknown>): Promise<number | undefined> {
-  // tg.sendMessage 호출 — 실제 전송 로직은 ToolHandler 에서 뜯어옴
-  // (중복 방지 위해 별도 함수로 분리 예정)
+**처음 연결 시 상태를 모르는 구간**: `sessionActive` 가 false 로 기본값. dispatcher 가 hello 수신 직후 session_state push 를 보내므로 실제로 "초기 모름" 기간은 수 ms 미만.
+
+## 3. `src/channels/telegram/tools/ToolHandler.ts` — reply 시 prefix
+
+```ts
+export class ToolHandler {
+  constructor(
+    private readonly tg: TelegramClient,
+    private readonly config: Config,
+    private readonly ipcBridge: IpcBridge | undefined,  // 신규 파라미터
+  ) {}
+
+  private async handleReply(rawArgs: unknown): Promise<McpResult> {
+    const args = replySchema.parse(rawArgs);
+    assertAllowedChat(this.config, args.chat_id);
+
+    // ── 비활성 세션이면 label prefix 주입 ─────────────────
+    if (this.ipcBridge && !this.ipcBridge.sessionActive) {
+      const label = this.ipcBridge.sessionLabel;
+      if (label && args.text) {
+        args.text = `[${label}] ${args.text}`;
+      }
+    }
+    // ─────────────────────────────────────────────────
+
+    // 이후 기존 chunking / sendMessage 로직 그대로
+    const chunks = args.split === "length" ? chunkByLength(args.text) : chunkByNewline(args.text);
+    // ...
+  }
+
+  // react / edit_message / download_attachment 는 변경 없음
+  // react 는 message_id 기반이라 세션 혼동 없음
+  // edit_message 도 기존 message_id 에 붙음
 }
+```
 
-async function flushBufferForSession(sessionId: string): Promise<void> {
-  const queue = pendingBySession.get(sessionId);
-  if (!queue || queue.length === 0) return;
+**파일 기반 reply**: `args.text` 가 빈 문자열이고 files 만 있는 케이스는 prefix 주입 안 함 (prefix 붙일 대상 없음). 파일 전송에 prefix 가 필요하면 후속 PR 에서.
+
+## 4. `src/channels/telegram/server.ts` — ToolHandler 에 ipcBridge 주입
+
+```ts
+async function main(): Promise<void> {
+  // ...
+  const ipcBridge = new IpcBridge();
+  if (ipcMode) {
+    await ipcBridge.connect(dispatcherSocket!, sessionId!, process.pid, { ... });
+  }
+
+  // 기존: const toolHandler = new ToolHandler(tg, config);
+  // 변경:
+  const toolHandler = new ToolHandler(tg, config, ipcMode ? ipcBridge : undefined);
+  // ...
+}
+```
+
+**stand-alone 모드** (ipcMode=false): ipcBridge undefined → ToolHandler 에서 prefix 스킵 → 기존 동작 유지.
+
+## 5. `src/dispatcher.ts` — session_state push + 카운터
+
+```ts
+// 상태
+const pendingCount = new Map<string, number>();
+
+function pushSessionState(sessionId: string): void {
   const session = registry.get(sessionId);
   if (!session) return;
-  for (const buf of queue) {
-    // label prefix 주입
-    const prefixed = { ...buf.args };
-    if (typeof prefixed.text === "string") {
-      prefixed.text = `[${session.label}] ${prefixed.text}`;
-    }
-    await executeReply(prefixed).catch((err) => {
-      anomaly.log("channel_reply_failed", {
-        op: "flush_buffer", sessionId, error: String(err),
-      });
-    });
+  const socket = session.socketId ? sockets.get(session.socketId) : undefined;
+  if (!socket) return;
+  const active = registry.active();
+  const isActive = active?.id === sessionId;
+  socket.send({
+    op: "session_state",
+    session_id: sessionId,
+    is_active: isActive,
+    label: session.label,
+  });
+}
+
+function pushSessionStateToAll(): void {
+  for (const s of registry.list()) {
+    pushSessionState(s.id);
   }
-  pendingBySession.delete(sessionId);
-  void doUpdateActivePin();
+}
+
+// IPC hello 수신 후
+case "hello": {
+  const ready = handleIpcHello(registry, msg.session_id, socketId);
+  // ...
+  pushSessionState(msg.session_id);  // ← 신규: 처음 연결 시 자기 상태 알려줌
+  break;
+}
+
+// reply_sent 수신 시 — 카운터 증가
+case "reply_sent": {
+  const session = registry.getBySocketId(socketId);
+  if (session) {
+    const active = registry.active();
+    if (active?.id !== session.id) {
+      // 비활성 세션의 응답
+      const cur = pendingCount.get(session.id) ?? 0;
+      pendingCount.set(session.id, cur + 1);
+      void doUpdateActivePin();
+    }
+  }
+  onReplySent();  // 기존 애니메이션 종료 로직
+  break;
 }
 ```
 
-## 5. `src/core/pin.ts` — 세션별 count 표시
+**세션 전환 시** (`SlashHandler.onSessionAction("switch", ...)` 내부에서 dispatcher 의 콜백 호출):
 
-현재 `updateActivePin` 은 활성 세션 정보만 pin 에 올림. 버퍼 count 를 받아서 같이 렌더.
+```ts
+function onActiveChanged(newActiveId: string | undefined): void {
+  if (newActiveId) pendingCount.set(newActiveId, 0);
+  void doUpdateActivePin();
+  pushSessionStateToAll();  // 모든 세션에 새 active 상태 push
+}
+```
+
+**세션 kill 시**: `pendingCount.delete(sessionId)` + `pushSessionStateToAll()`.
+
+## 6. `src/core/pin.ts` — 카운터 포함 렌더
 
 ```ts
 export async function updateActivePin(
@@ -196,51 +196,49 @@ export async function updateActivePin(
 ): Promise<void> {
   const active = registry.active();
   const lines: string[] = [];
-  if (active) lines.push(`🧷 active: ${active.id} (${active.label})`);
-  else lines.push("🧷 no active session");
+  if (active) {
+    lines.push(`🧷 active: ${active.id} (${active.label})`);
+  } else {
+    lines.push("🧷 no active session");
+  }
 
-  if (pendingCounts && pendingCounts.size > 0) {
-    for (const [sid, count] of pendingCounts) {
-      if (count === 0) continue;
-      const s = registry.get(sid);
-      const label = s?.label ?? sid;
+  if (pendingCounts) {
+    const pending = [...pendingCounts.entries()]
+      .filter(([, n]) => n > 0)
+      .sort(([a], [b]) => a.localeCompare(b));
+    for (const [sid, count] of pending) {
       lines.push(`📬 ${sid}: ${count}`);
     }
   }
 
   const text = lines.join("\n");
-  // 기존 pin 로직 (sendMessage + pinChatMessage 또는 editMessageText)
+  // 기존 pin 메시지 편집 또는 새로 pin
+  // ...
 }
 ```
 
-dispatcher 에서 호출 시 `pendingCounts` 를 `pendingBySession` 에서 파생해서 전달:
-```ts
-const counts = new Map<string, number>();
-for (const [sid, queue] of pendingBySession) counts.set(sid, queue.length);
-await updateActivePin(registry, tg, chatId, counts);
-```
+Dispatcher 에서 호출 시 `pendingCount` 맵을 넘겨줌 (기존 호출부는 `undefined` 전달 가능 — backwards-compatible).
 
-## 6. `src/channels/telegram/SlashHandler.ts` — 전환 시 flush
+## 7. 순서 보장 (dispatcher 내부)
 
-세션 전환 콜백(`onSessionAction` switch 케이스)에서 flush 호출 추가:
+단일 JS 이벤트 루프에서 순차 처리되므로 race 가 거의 없음. 단 pin 편집 (`editMessageText`) 은 네트워크 왕복이라 여러 건 동시에 가면 순서 꼬일 수 있음 — `doUpdateActivePin` 을 serialize 하는 큐 하나 유지 권장 (선택).
 
 ```ts
-case "switch": {
-  const s = registry.get(target) ?? registry.getByLabel(target);
-  if (!s) { ...; return; }
-  registry.setActive(s.id);
-  await flushBufferForSession(s.id);   // ← 신규
-  await this.deps.doUpdateActivePin();
-  ...
+let pinUpdateQueue: Promise<void> = Promise.resolve();
+function doUpdateActivePin(): Promise<void> {
+  pinUpdateQueue = pinUpdateQueue.then(() => updateActivePin(registry, tg, chatId, pendingCount));
+  return pinUpdateQueue;
 }
 ```
 
-`flushBufferForSession` 는 dispatcher 가 소유하므로 SlashHandlerDeps 에 콜백 추가.
+## 제거되는 것
 
-## 7. 세션 kill 시 버퍼 처리
+이전 설계 (dispatcher-routed buffer) 에서 제안했던:
+- ❌ `reply_request` / `reply_response` IPC op — **불필요**
+- ❌ `IpcBridge.requestReply()` 메서드 — **불필요**
+- ❌ `pendingBySession: Map<string, BufferedReply[]>` — **불필요**
+- ❌ `executeReply()` in dispatcher — **불필요**
+- ❌ `flushBufferForSession()` — **불필요**
+- ❌ 세션 전환 시 버퍼 flush 로직 — **불필요**
 
-`/kill` 로 세션 종료되거나 `handleIpcSignal` 로 dead 상태 되면 해당 세션의 pending 버퍼는 **discard** 가 맞음 (세션이 사라졌으니 복구 불가). dispatcher.ts 에서 kill 경로 찾아 `pendingBySession.delete(sessionId)` 호출.
-
-## 8. Dispatcher 재기동 시
-
-`reconcileOrphans` 가 registry 를 비우고 재시작하는 기존 철학 유지. 버퍼는 메모리에 있었으니 자동 소실 — 별도 처리 불필요.
+변경 규모가 1/3 수준으로 축소됨.

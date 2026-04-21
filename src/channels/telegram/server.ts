@@ -187,14 +187,21 @@ async function main(): Promise<void> {
   }));
 
   // Call tool handler
-  const toolHandler = new ToolHandler(tg, config);
+  const toolHandler = new ToolHandler(tg, config, ipcMode ? ipcBridge : undefined);
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const name = req.params.name;
     const rawArgs = req.params.arguments ?? {};
     const result = await toolHandler.handle(name, rawArgs);
     const isUserFacing = name === "reply" || name === "react" || name === "edit_message";
     if (isUserFacing && !result.isError && ipcMode && sessionId) {
-      ipcBridge.send({ op: "reply_sent", session_id: sessionId });
+      const payload: { op: "reply_sent"; session_id: string; message_ids?: number[] } = {
+        op: "reply_sent",
+        session_id: sessionId,
+      };
+      if (result.message_ids && result.message_ids.length > 0) {
+        payload.message_ids = result.message_ids;
+      }
+      ipcBridge.send(payload);
     }
     return result;
   });

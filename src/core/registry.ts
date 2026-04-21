@@ -13,7 +13,6 @@ export type Session = {
   signal: Signal;
   busySince?: number;
   lastReplyTs?: number;
-  backlog: string[];
   pendingPermissions: Set<string>;
   socketId?: string;
 };
@@ -30,6 +29,9 @@ type Snapshot = {
   // 현재 active session 을 가리키는 telegram pin 메시지 — 재기동 시 stale pin
   // 제거를 위해 필요. chatId:messageId 형태로 저장.
   activePin?: { chatId: string; messageId: number };
+  // 비활성 세션의 reply 핀 목록 — 재기동 후 stale 핀 제거를 위해 영속화.
+  // sessionId -> messageId[]
+  pinnedReplies?: Record<string, number[]>;
 };
 
 const SNAPSHOT_VERSION = 1;
@@ -40,6 +42,7 @@ export class Registry {
   private seq = 0;
   private persistPath: string | undefined;
   private activePin: { chatId: string; messageId: number } | undefined;
+  private pinnedReplies: Record<string, number[]> = {};
   private tmuxPrefix = "cb-";
 
   list(): Session[] {
@@ -80,7 +83,6 @@ export class Registry {
       tmuxName: tmuxNameOverride ?? `${this.tmuxPrefix}${id}`,
       state: "spawning",
       signal: "idle",
-      backlog: [],
       pendingPermissions: new Set(),
     };
     this.sessions.set(id, session);
@@ -139,19 +141,26 @@ export class Registry {
     if (persistWorthy) this.persist();
   }
 
-  pushBacklog(id: string, entry: string, cap = 100): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    s.backlog.push(entry);
-    if (s.backlog.length > cap) s.backlog.shift();
-  }
-
   getActivePin(): { chatId: string; messageId: number } | undefined {
     return this.activePin;
   }
 
   setActivePin(pin: { chatId: string; messageId: number } | undefined): void {
     this.activePin = pin;
+    this.persist();
+  }
+
+  getPinnedReplies(): Record<string, number[]> {
+    return { ...this.pinnedReplies };
+  }
+
+  setPinnedReplies(r: Record<string, number[]>): void {
+    this.pinnedReplies = { ...r };
+    this.persist();
+  }
+
+  clearPinnedReplies(): void {
+    this.pinnedReplies = {};
     this.persist();
   }
 
@@ -170,6 +179,7 @@ export class Registry {
     };
     if (this.activeId) out.activeId = this.activeId;
     if (this.activePin) out.activePin = this.activePin;
+    if (Object.keys(this.pinnedReplies).length > 0) out.pinnedReplies = this.pinnedReplies;
     return out;
   }
 
@@ -188,6 +198,7 @@ export class Registry {
     }
     this.activeId = snap.activeId;
     this.activePin = snap.activePin;
+    this.pinnedReplies = snap.pinnedReplies ?? {};
   }
 
   /** load snapshot from disk if file exists. safe to call without file present. */

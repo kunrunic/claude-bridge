@@ -33,10 +33,19 @@ export type SlashHandlerDeps = {
   registry: Registry;
   tg: TelegramClient;
   sessions: SessionManager;
-  doUpdateActivePin: () => Promise<void>;
+  /** Called when the active session changed. `leftSessionId` is the previous
+   * active session (if any) — used to clear its pending state (read-on-leave). */
+  onActiveChanged: (leftSessionId?: string) => void;
 };
 
 export class SlashHandler {
+  // Preserve /new label/cwd across the permission-picker round-trip.
+  // Keyed by chatId (one pending request per chat at a time).
+  private readonly pendingNewRequests = new Map<
+    string,
+    { label?: string; cwd?: string }
+  >();
+
   constructor(private readonly deps: SlashHandlerDeps) {}
 
   async handle(cmd: slash.SlashCommand, chatId: string): Promise<void> {
@@ -82,11 +91,17 @@ export class SlashHandler {
     }
 
     if (cmd.kind === "new") {
+      // Preserve label/cwd so the subsequent permission-picker callback can spawn correctly.
+      const opts: { label?: string; cwd?: string } = {};
+      if (cmd.label !== undefined) opts.label = cmd.label;
+      if (cmd.cwd !== undefined) opts.cwd = cmd.cwd;
+      this.pendingNewRequests.set(chatId, opts);
       const kb = new InlineKeyboard();
       kb.text("🔒 권한 확인 포함", "new_normal:").row();
       kb.text("🔴 권한 확인 스킵", "new_skip:").row();
       kb.text("✖ cancel", "cancel:").row();
-      await tg.sendWithKeyboard(chatId, "새 세션 권한 설정:", kb).catch(() => {});
+      const preview = cmd.label || cmd.cwd ? `\n(${[cmd.label, cmd.cwd].filter(Boolean).join(" · ")})` : "";
+      await tg.sendWithKeyboard(chatId, `새 세션 권한 설정:${preview}`, kb).catch(() => {});
       return;
     }
 
@@ -123,7 +138,7 @@ export class SlashHandler {
     void tg.sendMessage(chatId, reply).catch(() => {});
 
     if (registry.active()?.id !== beforeActiveId) {
-      void this.deps.doUpdateActivePin();
+      this.deps.onActiveChanged(beforeActiveId);
     }
   }
 
@@ -136,6 +151,7 @@ export class SlashHandler {
     const { registry, tg, sessions } = this.deps;
 
     if (action === "cancel") {
+      this.pendingNewRequests.delete(chatId);
       await tg
         .editWithKeyboard(chatId, msgId, "✖ cancelled")
         .catch(() => {});
@@ -147,8 +163,13 @@ export class SlashHandler {
 
     if (action === "new_normal" || action === "new_skip") {
       const skipPermissions = action === "new_skip";
+      const pending = this.pendingNewRequests.get(chatId) ?? {};
+      this.pendingNewRequests.delete(chatId);
+      const spawnOpts: { skipPermissions: boolean; label?: string; cwd?: string } = { skipPermissions };
+      if (pending.label !== undefined) spawnOpts.label = pending.label;
+      if (pending.cwd !== undefined) spawnOpts.cwd = pending.cwd;
       try {
-        const r = sessions.spawn({ skipPermissions });
+        const r = sessions.spawn(spawnOpts);
         text = `spawning ${r.label}...`;
       } catch (err) {
         text = `spawn failed: ${String(err)}`;
@@ -164,8 +185,7 @@ export class SlashHandler {
         text = `no such session: ${target}`;
       } else {
         registry.setActive(s.id);
-        const missed = s.backlog.length;
-        text = `▶ switched to ${s.label}${missed ? ` · ${missed} backlog msg(s)` : ""}`;
+        text = `▶ switched to ${s.label}`;
       }
     } else if (action === "resume" || action === "fork") {
       // two-step: show permission picker before spawning
@@ -186,7 +206,7 @@ export class SlashHandler {
     await tg.editWithKeyboard(chatId, msgId, text).catch(() => {});
 
     if (registry.active()?.id !== beforeActiveId) {
-      void this.deps.doUpdateActivePin();
+      this.deps.onActiveChanged(beforeActiveId);
     }
   }
 }
