@@ -112,7 +112,6 @@ export type HandleSlashDeps = {
   resume: (target: string, fork: boolean) => string;
   listRecent: () => string;
   kill: (target: string) => boolean;
-  renderStatus: () => string;
 };
 
 export function handleSlash(
@@ -150,26 +149,11 @@ export function handleSlash(
       if (!cmd.target) return deps.listRecent();
       return deps.resume(cmd.target, true);
     }
-    case "switch": {
-      const s =
-        deps.registry.get(cmd.target) ??
-        deps.registry.getByLabel(cmd.target);
-      if (!s) return `no such session: ${cmd.target}`;
-      deps.registry.setActive(s.id);
-      const missed = s.backlog.length;
-      return `▶ switched to ${s.label}${
-        missed ? ` · ${missed} backlog msg(s)` : ""
-      }`;
-    }
     case "kill": {
       if (!cmd.target) return "use /kill <id|label>, or /kill with no arg for a session picker";
       return deps.kill(cmd.target)
         ? `killed ${cmd.target}`
         : `no such session: ${cmd.target}`;
-    }
-    case "current": {
-      const a = deps.registry.active();
-      return a ? `active: ${a.label}` : "no active session";
     }
     case "backlog": {
       const s = cmd.target
@@ -180,9 +164,6 @@ export function handleSlash(
       return s.backlog.length === 0
         ? `(${s.label}) no backlog`
         : `(${s.label}) backlog:\n${s.backlog.slice(-20).join("\n")}`;
-    }
-    case "status": {
-      return deps.renderStatus();
     }
   }
 }

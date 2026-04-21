@@ -4,38 +4,37 @@ Telegram 봇 명령어 목록, 파싱 로직, dispatcher 처리 경로.
 
 ## 커맨드 목록
 
-**BOT_COMMANDS** (`slash.ts:60-70`)
+**BOT_COMMANDS** (`slash.ts`)
 
 | 명령어 | 설명 |
 |--------|------|
-| `/sessions` | 활성 세션 목록 표시 |
+| `/sessions` | 세션 목록 / 탭해서 전환 |
 | `/new` | 새 Claude 세션 spawn — `/new [label] [cwd]` |
-| `/resume` | 세션 목록 / 복원 (같은 ID) — `/resume [N\|id]` |
+| `/resume` | 세션 복원 (같은 ID) — `/resume [N\|id]` |
 | `/fork` | 복원 (새 ID, 컨텍스트 상속) — `/fork [N\|id]` |
-| `/switch` | 활성 세션 전환 — `/switch <id\|label>` |
-| `/kill` | 세션 종료 — `/kill <id\|label>` |
-| `/current` | 현재 활성 세션 표시 |
-| `/backlog` | 메시지 backlog 조회 — `/backlog [id\|label]` |
-| `/status` | 24h anomaly 요약 |
+| `/kill` | 세션 종료 — `/kill <id\|label>` 또는 picker |
 
-Dispatcher가 시작할 때 `tg.setMyCommands(slash.BOT_COMMANDS)` 호출 (`dispatcher.ts:364`)
+Dispatcher 시작 시 `tg.setCommands(slash.BOT_COMMANDS)` 호출.
+
+`/backlog` 는 BOT_COMMANDS 에 없지만 parser 는 인식 (수동 입력 지원).
 
 ## 파싱
 
-**parse()** (`slash.ts:18-58`)
+**parse()** (`src/core/slash.ts`)
 
-정규식: `/^\/([a-z]+)(?:\s+(.+))?$/` (`slash.ts:12`)
+정규식: `/^\/([a-z]+)(?:\s+(.+))?$/`
 
 예:
 - `/sessions` → `{ kind: "sessions" }`
 - `/new` → `{ kind: "new" }`
 - `/new myproject` → `{ kind: "new", label: "myproject" }`
 - `/new myproject /path/to/cwd` → `{ kind: "new", label: "myproject", cwd: "/path/to/cwd" }`
-- `/switch s1` → `{ kind: "switch", target: "s1" }`
 - `/resume 1` → `{ kind: "resume", target: "1" }`
 - `/fork abc12` → `{ kind: "fork", target: "abc12" }`
+- `/kill s1` → `{ kind: "kill", target: "s1" }`
+- `/backlog` → `{ kind: "backlog" }`
 
-**경로 vs 라벨 판별** (`slash.ts:14-16, 31-33`)
+**경로 vs 라벨 판별**
 - 인자가 `/` 또는 `~` 로 시작 → cwd (경로)
 - 아니면 → label
 
@@ -46,152 +45,80 @@ Dispatcher가 시작할 때 `tg.setMyCommands(slash.BOT_COMMANDS)` 호출 (`disp
 
 ## Dispatcher 처리
 
-**flow**: Telegram 메시지 → slash.parse() → handleSlash() → 적절한 핸들러
+**flow**: Telegram 메시지 → slash.parse() → SlashHandler.handle() → 경우에 따라 인라인 키보드 OR `core.handleSlash()`
 
-**위치** (`dispatcher.ts:308-313`)
-```typescript
-const slashCmd = slash.parse(evt.content);
-if (slashCmd) {
-  const reply = handleSlash(slashCmd, evt.meta.chat_id);
-  void tg.sendMessage(evt.meta.chat_id, reply).catch(() => {});
-  return;
-}
-```
+**SlashHandler** (`src/channels/telegram/SlashHandler.ts`)
+- `sessions` / `new` / `resume` / `fork` / `kill(no target)` → Telegram 인라인 키보드 출력 후 callback 대기
+- `resume(target)` / `fork(target)` / `kill(target)` / `backlog` → `core.handleSlash()` 위임
 
-**handleSlash()** (`dispatcher-core.ts:99-168`)
+**handleSlash()** (`src/core/dispatcher-core.ts`)
 
-순수 함수. Dependency injection으로 동작:
+순수 함수. Dependency injection 으로 동작:
 - `registry` — 세션 추적
 - `spawn` — `/new` 처리
 - `resume` — `/resume`, `/fork` 처리
 - `listRecent` — 최근 세션 목록
 - `kill` — `/kill` 처리
-- `renderStatus` — `/status` 응답 생성
 
 ## 커맨드별 처리
 
 ### `/sessions`
-현재 메모리의 모든 세션 표시.
 
-**출력**
+인라인 키보드로 세션 목록 출력. 각 버튼 탭 시 `switch:<id>` callback 발화 →
+`SlashHandler.onSessionAction("switch", ...)` 에서 `registry.setActive()` + pin 갱신.
+
+**버튼 포맷** (`src/channels/telegram/SlashHandler.ts`)
 ```
-▶ s1 (myproject) — idle/idle
-  s2 (other) — busy/busy
-```
-
-▶ = 활성 세션
-상태: {state}/{signal}
-
-**코드** (`dispatcher-core.ts:104-113`)
-
-### `/new [label] [cwd]`
-새 세션 spawn.
-
-**처리** (`dispatcher-core.ts:115-124`)
-1. opts 구성 (label, cwd)
-2. deps.spawn(opts) 호출 → spawnSession()
-3. "spawned {id} ({label})" 응답
-
-**에러**: spawn 실패 시 예외 catch, 에러 메시지 반환
-
-### `/resume [N|id]`
-최근 세션 목록 / 복원.
-
-**인수 없음** → 최근 8개 세션 목록 표시 (`dispatcher-core.ts:127`)
-```
-Recent Claude sessions:
-1. [04/20 10:30] myproj · First user message
-2. [04/20 09:15] other · Another message
+▶  1 🟢 backend        ← 활성
+   2 🔵 research       ← busy
+   3 ⏸ rate-limited    ← rate limit
+✖ cancel
 ```
 
-**인수** (숫자 또는 ID) → `resumePicked(target, false)` 호출 (`dispatcher-core.ts:128`)
+### `/new`
 
-**에러**
-- 인덱스 범위 초과: "pick index out of range..."
-- 세션 없음: "no such session..."
-- cwd 없음: "session cwd missing on disk..."
+인라인 키보드로 퍼미션 모드 선택 UI 표시.
+- 🔒 권한 확인 포함 → `new_normal:`
+- 🔴 권한 확인 스킵 → `new_skip:`
+- ✖ cancel → `cancel:`
 
-### `/fork [N|id]`
-새 session_id로 복원 (컨텍스트 상속).
+선택 시 `onSessionAction("new_normal"|"new_skip", ...)` → `sessions.spawn({ skipPermissions })`
 
-`resumePicked(target, true)` 호출 (`dispatcher-core.ts:131-132`)
+### `/resume`
 
-차이점: spawnSession 옵션에 `forkSession: true` 추가 (`dispatcher.ts:264`)
+인수 없으면 `sessions.refreshPickerCache()` → 최근 세션 picker 표시 (최대 8개).
+각 버튼 탭 시 `resume:<id>` → 퍼미션 모드 선택 (2단계) → `sessions.resume(target, false, skipPermissions)`.
 
-### `/switch <id|label>`
-활성 세션 변경.
+인수 있으면 `core.handleSlash()` 로 바로 위임.
 
-**처리** (`dispatcher-core.ts:134-143`)
-1. Registry.get() 또는 getByLabel()
-2. Registry.setActive(s.id)
-3. "▶ switched to {label}" + backlog 갯수 표시
+### `/fork`
 
-### `/kill <id|label>`
-세션 종료.
+`/resume` 과 동일 흐름. `sessions.resume(target, true, skipPermissions)` 호출 (fork=true).
 
-**처리** (`dispatcher-core.ts:145-148`)
-1. deps.kill(target) 호출 → killSession()
-2. 성공: "killed {target}"
-3. 실패: "no such session..."
+### `/kill`
 
-### `/current`
-현재 활성 세션 표시.
-
-**처리** (`dispatcher-core.ts:150-152`)
-- "active: {label}"
-- 활성 세션 없으면: "no active session"
+인수 없으면 세션 picker (🗑 prefix) 표시. 탭 시 `kill:<id>` callback → `sessions.kill()`.
+인수 있으면 `core.handleSlash()` 로 바로 위임.
 
 ### `/backlog [id|label]`
-최근 20개 메시지 backlog 조회.
 
-**처리** (`dispatcher-core.ts:154-162`)
-1. 인수 있으면 해당 세션, 없으면 활성 세션
-2. backlog 출력 (최근 20개)
-3. 비어있으면: "(label) no backlog"
+최근 20개 메시지 backlog 조회. 인수 없으면 활성 세션 대상.
 
 **형식**
 ```
 (myproject) backlog:
-← /status
+← /sessions
 ← hello world
 ```
 
-### `/status`
-24시간 anomaly 요약.
-
-**처리** (`dispatcher.ts:286-302`)
-1. `anomaly.summary(WINDOW_MS)` — 24h 윈도우
-2. anomaly 없으면: "📊 24h anomalies: none"
-3. 있으면: kind별 카운트 + 마지막 발생 시각
-4. token_collision_detected → ⚠️ 배지
-
-**예**
-```
-📊 24h anomalies: 5
-  channel_reply_failed: 2  (last 10:30:45)
-  session_spawn_failed: 1  (last 09:15:22)
-⚠️ token_collision_detected: 2  (last 08:45:10)
-log: /Users/user/.claude-bridge/anomaly.jsonl
-
-help:
-Commands:
-  /sessions            list all sessions
-  ...
-```
-
-Telegram command hint 도 함께 표시 (`slash.help()`)
-
-## help()
-
-`slash.help()` — 모든 커맨드 요약. `/status` 응답의 마지막에 포함 (`slash.ts:72-85`)
-
 ## Known Fragility
 
-- 매우 긴 session label (50자+)이 있으면 Telegram UI에서 잘릴 수 있음 (하지만 기능은 정상)
-- 동시에 같은 session_id를 resume 하려는 경우 race condition 가능 (권장 아님)
+- Telegram 인라인 키보드 버튼은 **proportional font** 로 렌더링 — 고정폭 정렬이 시각적으로 완벽하지 않음
+- 매우 긴 session label (50자+) 은 fmtLabel 로 10자 + … 절삭 표시됨
 
 ## 참고
 
 - 파싱 및 타입: `src/core/slash.ts`
-- 처리 함수: `src/core/dispatcher-core.ts`
-- 디스패처: `src/dispatcher.ts`
+- 순수 처리 함수: `src/core/dispatcher-core.ts`
+- 인라인 키보드 UI + 세션 picker: `src/channels/telegram/SlashHandler.ts`
+- 디스패처 조립: `src/dispatcher.ts`

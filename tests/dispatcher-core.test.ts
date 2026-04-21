@@ -237,7 +237,6 @@ describe("handleSlash", () => {
         registry.remove(s.id);
         return true;
       },
-      renderStatus: () => "STATUS",
     };
     return Object.assign(deps, {
       spawnCalls,
@@ -297,21 +296,6 @@ describe("handleSlash", () => {
     expect(deps.resumeCalls).toEqual([{ target: "3", fork: true }]);
   });
 
-  test("/switch by label", () => {
-    const deps = makeDeps();
-    deps.registry.create("alpha");
-    deps.registry.create("beta");
-    const r = handleSlash(deps, { kind: "switch", target: "beta" });
-    expect(r).toMatch(/switched to beta/);
-    expect(deps.registry.active()?.label).toBe("beta");
-  });
-
-  test("/switch missing target", () => {
-    const deps = makeDeps();
-    const r = handleSlash(deps, { kind: "switch", target: "nope" });
-    expect(r).toMatch(/no such session/);
-  });
-
   test("/kill with target delegates", () => {
     const deps = makeDeps();
     const s = deps.registry.create("alpha");
@@ -326,19 +310,6 @@ describe("handleSlash", () => {
     const r = handleSlash(deps, { kind: "kill" });
     expect(r).toMatch(/kill/);
     expect(deps.killCalls).toHaveLength(0);
-  });
-
-  test("/current with active", () => {
-    const deps = makeDeps();
-    deps.registry.create("alpha");
-    const r = handleSlash(deps, { kind: "current" });
-    expect(r).toMatch(/alpha/);
-  });
-
-  test("/current none", () => {
-    const deps = makeDeps();
-    const r = handleSlash(deps, { kind: "current" });
-    expect(r).toMatch(/no active session/);
   });
 
   test("/backlog empty", () => {
@@ -356,9 +327,4 @@ describe("handleSlash", () => {
     expect(r).toMatch(/msg-a/);
   });
 
-  test("/status delegates to renderStatus", () => {
-    const deps = makeDeps();
-    const r = handleSlash(deps, { kind: "status" });
-    expect(r).toBe("STATUS");
-  });
 });

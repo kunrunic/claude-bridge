@@ -1,6 +1,6 @@
 # claude-bridge 현재 기능 설계서 (AS-IS)
 
-MCP 채널 기반 Telegram ↔ Claude Code 멀티 세션 브리지. 현재 코드 기준(2026-04-20, `main` 브랜치)으로 봇의 동작을 기술한다. 버그/개선 제안은 여기가 아니라 `docs/plans/` 와 `docs/reviews/` 에 기록한다.
+MCP 채널 기반 Telegram ↔ Claude Code 멀티 세션 브리지. 현재 코드 기준(2026-04-21, `main` 브랜치)으로 봇의 동작을 기술한다. 버그/개선 제안은 여기가 아니라 `docs/plans/` 와 `docs/reviews/` 에 기록한다.
 
 ## 읽는 순서
 

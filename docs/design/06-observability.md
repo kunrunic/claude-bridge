@@ -10,7 +10,7 @@ Always-on JSONL anomaly 로거, 구조화 로그 태그 체계, 테스트 레이
 
 ### log() 함수
 
-**위치** (`anomaly.ts:51-64`)
+**위치** (anomaly.ts 에 구현)
 
 ```typescript
 function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void
@@ -29,11 +29,11 @@ function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void
    }
    ```
 
-**설계**: 관측성 실패가 봇 로직을 중단하면 안 되므로 모든 예외를 silent catch (`anomaly.ts:61-63`)
+**설계**: 관측성 실패가 봇 로직을 중단하면 안 되므로 모든 예외를 silent catch (anomaly.ts 에 구현)
 
 ### AnomalyKind 열거
 
-**정의** (`anomaly.ts:34-49`)
+**정의** (anomaly.ts 에 정의)
 
 | 종류 | 의미 |
 |------|------|
@@ -52,10 +52,16 @@ function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void
 | `shutdown` | 정상 종료 |
 | `stale_instance_evicted` | 중복 인스턴스 제거 |
 | `orphan_detected` | 부모 프로세스 사라짐 감지 |
+| `server_startup` | MCP server 시작 (debugging info) |
+| `ipc_connect_start` | IPC 연결 시도 |
+| `ipc_connect_ok` | IPC 연결 성공 |
+| `ipc_connect_failed` | IPC 연결 실패 |
+| `ipc_hello_received` | hello 메시지 수신 |
+| `rate_limit_hit` | Claude rate limit 감지 |
 
 ### 로그 로테이션
 
-**rotateIfNeeded()** (`anomaly.ts:17-32`)
+**rotateIfNeeded()** (anomaly.ts 에 구현)
 
 파일 크기 5MB 초과 시:
 ```
@@ -69,7 +75,7 @@ anomaly.jsonl.3 삭제 (KEEP=3)
 
 ### summary()
 
-**위치** (`anomaly.ts:66-98`)
+**위치** (anomaly.ts 에 구현)
 
 ```typescript
 function summary(windowMs: number): {
@@ -81,13 +87,13 @@ function summary(windowMs: number): {
 
 **용도**: `/status` 커맨드에서 24시간 이내 anomaly 집계.
 
-**윈도우**: windowMs만큼 이전 기록만 카운트 (`dispatcher.ts:287`)
+**윈도우**: windowMs만큼 이전 기록만 카운트
 ```typescript
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const s = anomaly.summary(WINDOW_MS);
 ```
 
-**응답 포맷** (`dispatcher.ts:289-302`)
+**응답 포맷** (dispatcher.ts 에 구현)
 ```
 📊 24h anomalies: 5
   channel_reply_failed: 2  (last 10:30:45)
@@ -100,50 +106,60 @@ log: /Users/user/.claude-bridge/anomaly.jsonl
 ### Dispatcher
 
 **anomaly 발생**:
-- `channel_reply_failed` — 봇 공지 송신 실패 (`dispatcher.ts:83`)
-- `inbound_no_active_session` — 활성 세션 없을 때 inbound (`dispatcher.ts:318-320`)
-- `mcp_unknown_method` — IPC op 미인식 (`dispatcher.ts:130-133`)
-- `shutdown` — graceful shutdown 로그 (`dispatcher.ts:380`)
-- `stale_instance_evicted` — PID lock에서 중복 제거 (`dispatcher.ts:44`, lifecycle.ts 호출)
+- `channel_reply_failed` — 봇 공지 송신 실패
+- `inbound_no_active_session` — 활성 세션 없을 때 inbound
+- `mcp_unknown_method` — IPC op 미인식
+- `shutdown` — graceful shutdown 로그
+- `stale_instance_evicted` — PID lock에서 중복 제거
 
 ### MCP Server
 
 **anomaly 발생**:
-- `channel_reply_failed` — permission 알림 송신 실패 (`server.ts:149`)
-- `channel_reply_failed` — inbound 알림 송신 실패 (`server.ts:164`)
-- `mcp_unknown_method` — IPC op 미인식 (`server.ts:184`)
-- `anomaly_self_error` — IPC 파싱 오류 (`server.ts:191`)
-- `session_spawn_failed` — dev warning / trust dialog 타임아웃 또는 confirm 실패 (`dispatcher.ts:162, 175, 193`)
+- `channel_reply_failed` — permission 알림 송신 실패
+- `channel_reply_failed` — inbound 알림 송신 실패
+- `mcp_unknown_method` — IPC op 미인식
+- `anomaly_self_error` — IPC 파싱 오류
+- `session_spawn_failed` — dev warning / trust dialog 타임아웃 또는 confirm 실패
 
 ### Poller
 
 **anomaly 발생**:
-- `telegram_api_failed` — bot.start() 폴링 오류 (`poller.ts:159`)
-- `token_collision_detected` — 409 Conflict 반복 (`poller.ts:72`)
-- `inbound_no_active_session` — permission reply 권한 부족 (`poller.ts:102`)
+- `telegram_api_failed` — bot.start() 폴링 오류
+- `token_collision_detected` — 409 Conflict 반복
+- `inbound_no_active_session` — permission reply 권한 부족
 
 ### IPC
 
 **anomaly 발생**:
-- `anomaly_self_error` — send() 오류 (`ipc.ts:63`)
-- `anomaly_self_error` — parse 오류 (`ipc.ts:83`)
+- `anomaly_self_error` — send() 오류
+- `anomaly_self_error` — parse 오류
 
 ### Registry & Config
 
 **anomaly 발생**:
-- `anomaly_self_error` — sessions.findSessions 읽기 오류 (`sessions.ts:84`)
+- `anomaly_self_error` — sessions.findSessions 읽기 오류
 
 ### Tmux
 
 **anomaly 발생**:
-- `session_spawn_failed` — new-session 실패 (`session.ts:39`)
-- `tmux_capture_failed` — capture-pane 또는 send-keys 실패 (`session.ts:51, 65`)
+- `session_spawn_failed` — new-session 실패
+- `tmux_capture_failed` — capture-pane 또는 send-keys 실패
 
 ### Lifecycle
 
 **anomaly 발생**:
-- `stale_instance_evicted` — 중복 인스턴스 강제 종료 (`lifecycle.ts:44`)
-- `orphan_detected` — 부모 프로세스 사라짐 (`lifecycle.ts:89, 95`)
+- `stale_instance_evicted` — 중복 인스턴스 강제 종료
+- `orphan_detected` — 부모 프로세스 사라짐
+
+## 신규 컴포넌트 문서화 (2026-04-21)
+
+최근 리팩토링으로 핵심 기능이 분리됨:
+- `SessionManager.ts` (199줄) — spawn / resume / fork / gracefulKill, dialog 자동 dismiss
+- `TickObserver.ts` (85줄) — 5초 주기 pane 관찰, signal 변화 감지
+- `IpcBridge.ts` (119줄) — MCP server ↔ dispatcher 자동 재연결 (지수 백오프)
+- `SlashHandler.ts` (194줄) — Telegram 슬래시 커맨드 핸들러, InlineKeyboard 처리
+
+이들 신규 파일은 dispatcher.ts 에서 조립되며, AS-IS 현황에 맞춘 설계서를 유지 중.
 
 ## 테스트 구조
 

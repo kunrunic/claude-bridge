@@ -192,29 +192,11 @@ async function main(): Promise<void> {
     announce,
   });
 
-  function renderStatus(): string {
-    const WINDOW_MS = 24 * 60 * 60 * 1000;
-    const s = anomaly.summary(WINDOW_MS);
-    if (s.total === 0) {
-      return "📊 24h anomalies: none\nlog: " + anomaly.LOG_FILE_PATH;
-    }
-    const ordered = [...s.byKind.entries()].sort((a, b) => b[1] - a[1]);
-    const lines: string[] = [`📊 24h anomalies: ${s.total}`];
-    for (const [kind, count] of ordered) {
-      const badge = kind === "token_collision_detected" ? "⚠️ " : "  ";
-      const last = s.lastTs.get(kind)?.slice(11, 19) ?? "";
-      lines.push(`${badge}${kind}: ${count}  (last ${last})`);
-    }
-    lines.push(`log: ${anomaly.LOG_FILE_PATH}`, "", "help:", slash.help());
-    return lines.join("\n");
-  }
-
   const slashHandler = new SlashHandler({
     registry,
     tg,
     sessions,
     doUpdateActivePin,
-    renderStatus,
   });
 
   const ipcServer = startServer(socketPath, (ls) => {
@@ -314,7 +296,7 @@ async function main(): Promise<void> {
   void doUpdateActivePin();
   announce(
     `🟢 claude-bridge started${CB_INSTANCE ? ` [${CB_INSTANCE}]` : ""}\n` +
-      `/new — 새 세션  /sessions — 세션 목록  /status — 상태`,
+      `/new — 새 세션  /sessions — 세션 목록 / 전환`,
   );
 
   async function shutdown(): Promise<void> {

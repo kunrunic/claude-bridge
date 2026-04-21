@@ -4,7 +4,7 @@ Allowlist 게이트, 권한 요청 UI, 폴더 신뢰 자동 승인, 설정 파�
 
 ## Allowlist 게이트
 
-**gate()** (`access.ts:7-18`)
+**gate()** (access.ts 에 구현)
 
 Telegram inbound 메시지 필터링:
 
@@ -18,7 +18,7 @@ function gate(config: Config, chatId: string, userId: string): AccessDecision
 3. chatId가 allowlist에 있으면? → `allow`
 4. 그 외 → `drop` ("user_id ... not in allowlist")
 
-**사용 위치** (`poller.ts:253`)
+**사용 위치** (poller.ts 에서 호출)
 ```typescript
 const decision = gate(this.config, chatId, userId);
 if (decision.action === "drop") {
@@ -29,7 +29,7 @@ if (decision.action === "drop") {
 }
 ```
 
-**Allowlist 설정** (`config.ts:8`)
+**Allowlist 설정** (config.ts 에 정의)
 ```json
 {
   "allowlist": ["user_id_1", "chat_id_1", "user_id_2"]
@@ -41,7 +41,7 @@ if (decision.action === "drop") {
 - 혼합 가능
 
 **특수 항목**: `defaultChatId` (선택사항)
-- 봇 내부 announcements 용 (세션 없을 때 경고 등) (`dispatcher.ts:81-88`)
+- 봇 내부 announcements 용 (세션 없을 때 경고 등)
 
 ## 권한 요청 (Tool Permission)
 
@@ -58,17 +58,17 @@ Claude Code에서 도구(예: `reply`) 호출 시 권한 필요. MCP permission 
 
 3. **dispatcher 중계** (IPC 모드)
    - server → dispatcher로 `permission_request` IPC 메시지
-   - dispatcher가 allowlist의 모든 chat_id에 Telegram InlineKeyboard 메시지 전송 (`dispatcher.ts:100-122`)
+   - dispatcher가 allowlist의 모든 chat_id에 Telegram InlineKeyboard 메시지 전송
 
 4. **사용자 승인/거절**
    - Telegram에서 ✅/❌ 버튼 클릭
    - `handleCallback()` 또는 `handleInbound()` (REPLY_RE match) 처리
 
 5. **poller에서 permission 콜백 호출**
-   - `onPermissionReply(requestId, "allow"|"deny")` (`poller.ts:218`)
+   - `onPermissionReply(requestId, "allow"|"deny")`
 
 6. **dispatcher → server permission_reply**
-   - dispatcher가 server에 `permission_reply` IPC 메시지 전송 (`dispatcher.ts:149`)
+   - dispatcher가 server에 `permission_reply` IPC 메시지 전송
    - server가 `notifications/claude/channel/permission` 알림으로 변환
 
 7. **Claude 계속 실행**
@@ -76,7 +76,7 @@ Claude Code에서 도구(예: `reply`) 호출 시 권한 필요. MCP permission 
 
 ### 권한 요청 UI
 
-**Compact 형식** (`permissions.ts:14-19`)
+**Compact 형식** (permissions.ts 에 정의)
 ```
 🔐 Permission: mcp__tg_channel__reply
 [See more] [✅ Allow] [❌ Deny]
@@ -84,7 +84,7 @@ Claude Code에서 도구(예: `reply`) 호출 시 권한 필요. MCP permission 
 
 - "See more" 버튼 클릭 → expanded 형식 전환
 
-**Expanded 형식** (`permissions.ts:21-24, 27-40`)
+**Expanded 형식** (permissions.ts 에 정의)
 ```
 🔐 Permission: mcp__tg_channel__reply
 
@@ -99,20 +99,20 @@ input_preview:
 [✅ Allow] [❌ Deny]
 ```
 
-**InlineKeyboard 구성** (`permissions.ts:14-25`)
+**InlineKeyboard 구성** (permissions.ts 에 정의)
 - Compact: 3개 버튼 (See more, Allow, Deny) — 1행
 - Expanded: 2개 버튼 (Allow, Deny) — 1행
 
 ### Callback 형식
 
-**CALLBACK_RE** (`permissions.ts:11`)
+**CALLBACK_RE** (permissions.ts 에 정의)
 ```
 ^perm:(allow|deny|more):([a-km-z]{5})$
 ```
 
 예: `perm:allow:abc12`, `perm:deny:abc12`, `perm:more:abc12`
 
-**REPLY_RE** (`permissions.ts:12`)
+**REPLY_RE** (permissions.ts 에 정의)
 ```
 ^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$
 ```
@@ -121,18 +121,18 @@ input_preview:
 
 ### 권한 저장소
 
-**pendingPermissions** (`permissions.ts:9`)
+**pendingPermissions** (permissions.ts 에 정의)
 ```typescript
 const pendingPermissions = new Map<string, PermissionDetails>();
 ```
 
 request_id → {tool_name, description, input_preview}
 
-권한 해결 후 삭제 (`permissions.ts:219`, `dispatcher.ts:142`)
+권한 해결 후 삭제
 
 ### 승인 시 처리
 
-**Callback 핸들러** (`poller.ts:176-230`)
+**Callback 핸들러** (poller.ts 에 구현)
 
 1. 데이터 파싱: `CALLBACK_RE.exec(data)`
 2. 인증: sender가 allowlist에 있는가?
@@ -140,7 +140,7 @@ request_id → {tool_name, description, input_preview}
 4. `onPermissionReply(requestId, behavior)` 호출
 5. Telegram 메시지 편집: "✅ Allowed" 또는 "❌ Denied" 추가
 
-**Inbound 텍스트 매칭** (`poller.ts:95-115`)
+**Inbound 텍스트 매칭** (poller.ts 에 구현)
 
 REPLY_RE 매칭: "yes abc12" 또는 "no abc12"
 - 같은 처리 흐름
@@ -151,14 +151,14 @@ Claude Code 실행 시 "Trust this folder?" 프롬프트 가능.
 
 dispatcher가 자동으로 처리:
 
-**confirmTrustDialog()** (`dispatcher.ts:152-169`)
+**confirmTrustDialog()** (dispatcher.ts 에 구현)
 - 10초 폴링 (200ms 간격)
 - "I trust this folder" 마커 감지
 - 감지되면 Enter 키 전송
 
 ## 설정 파일 권한 강화
 
-**loadConfig()** (`config.ts:27-39`)
+**loadConfig()** (config.ts 에 구현)
 
 ```typescript
 function hardenPermissions(path: string): void {
@@ -174,11 +174,11 @@ function hardenPermissions(path: string): void {
 - `~/.claude-bridge/config.json` 파일: 0600 (소유자만 읽기/쓰기)
 - `~/.claude-bridge/` 디렉토리: 0700 (소유자만 접근)
 
-**시점**: config 로드 시 자동 실행 (`config.ts:31`)
+**시점**: config 로드 시 자동 실행
 
 ## 설정 스키마
 
-**Config** (`config.ts:6-11`)
+**Config** (config.ts 에 정의)
 
 ```json
 {
@@ -189,15 +189,15 @@ function hardenPermissions(path: string): void {
 }
 ```
 
-**환경변수 오버라이드** (`config.ts:33-37`)
+**환경변수 오버라이드** (config.ts 에 구현)
 - `TELEGRAM_BOT_TOKEN` → botToken 우선
 - `CB_DUMP` → dumpEnabled 우선
 
 ## 권한 요청 스탠드얼론 모드
 
-dispatcher 없이 server만 실행되는 경우 (`server.ts:172-196`가 아닌 경우):
+dispatcher 없이 server만 실행되는 경우:
 
-**permission_request 처리** (`server.ts:234-244`)
+**permission_request 처리** (server.ts 에 구현)
 - 직접 allowlist의 모든 chat_id에 Telegram 메시지 전송
 - dispatcher를 거치지 않음
 
@@ -205,7 +205,7 @@ dispatcher 없이 server만 실행되는 경우 (`server.ts:172-196`가 아닌 �
 
 ## Allowlist 확인 헬퍼
 
-**assertAllowedChat()** (`access.ts:20-24`)
+**assertAllowedChat()** (access.ts 에 구현)
 
 ```typescript
 function assertAllowedChat(config: Config, chatId: string): void {
@@ -219,7 +219,7 @@ function assertAllowedChat(config: Config, chatId: string): void {
 
 ## Permission Timeout 및 GC
 
-**pendingPermissions**는 요청 해결 후 즉시 삭제 (`permissions.ts:219`, `dispatcher.ts:142`).
+**pendingPermissions**는 요청 해결 후 즉시 삭제.
 
 매우 오래된 권한 요청(예: 1시간 이상)은 UI에서는 사라지지만, 정확한 timeout 정책은 없음 (권장: 권한 요청 빠른 응답).
 
@@ -228,7 +228,7 @@ function assertAllowedChat(config: Config, chatId: string): void {
 권한 요청 중 Telegram API 409 Conflict 감지 시:
 - 같은 토큰으로 다른 봇 인스턴스 폴링 중
 - `token_collision_detected` anomaly log
-- allowlist의 모든 chat_id에 경고 메시지 전송 (`poller.ts:60-83`)
+- allowlist의 모든 chat_id에 경고 메시지 전송
 
 ## Known Fragility
 
@@ -241,4 +241,4 @@ function assertAllowedChat(config: Config, chatId: string): void {
 - 설정 로드: `src/channels/telegram/config.ts`
 - 게이트: `src/channels/telegram/access.ts`
 - 권한 UI: `src/channels/telegram/permissions.ts`
-- Poller 처리: `src/channels/telegram/poller.ts:241-279`
+- Poller 처리: src/channels/telegram/poller.ts 에 구현

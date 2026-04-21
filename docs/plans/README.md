@@ -31,6 +31,7 @@
 | 폴더 | 상태 | 요지 |
 |------|------|------|
 | [20260420-mcp-channel-adapter/](20260420-mcp-channel-adapter/README.md) | 완료 | Python pane-parsing → Bun/TS MCP 채널 어댑터 전환 (Stage 4 컷오버) |
+| [20260421-inactive-session-reply-buffering/](20260421-inactive-session-reply-buffering/README.md) | 설계 검토 중 | 비활성 세션 reply 를 dispatcher 메모리에 버퍼링, pin 에 세션별 count 표시, 전환 시 label prefix 로 flush |
 
 Python pane-parsing 시대의 계획 폴더들(20260415-initial-plan, 20260418-esc-flush-recovery, 20260419-pipe-pane-redesign-poc)은 태그 `pre-python-removal-20260420` 시점에서 조회할 수 있다.
 

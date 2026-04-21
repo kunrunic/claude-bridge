@@ -107,10 +107,6 @@ describe("slash parser", () => {
   test("/kill with target", () => {
     expect(slash.parse("/kill s1")).toEqual({ kind: "kill", target: "s1" });
   });
-  test("/switch requires arg", () => {
-    expect(slash.parse("/switch")).toBeUndefined();
-    expect(slash.parse("/switch s2")).toEqual({ kind: "switch", target: "s2" });
-  });
   test("unknown command", () => {
     expect(slash.parse("/nope")).toBeUndefined();
   });

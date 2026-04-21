@@ -5,7 +5,7 @@
 ## 세션 ID 및 라벨
 
 **세션 ID**
-- 형식: `s{N}` (N = 자동 증가 카운터) (`registry.ts:44-45`)
+- 형식: `s{N}` (N = 자동 증가 카운터)
 - 유니크 식별자. Claude Code 세션 아이디와는 무관
 - 예: `s1`, `s2`, `s3`, ...
 
@@ -15,7 +15,7 @@
 - 라벨은 유니크하지 않음 (제약 없음)
 
 **tmux 세션명**
-- `cb-{sessionId}` 형식. 예: `cb-s1`, `cb-s2` (`registry.ts:49`)
+- `cb-{sessionId}` 형식. 예: `cb-s1`, `cb-s2`
 - tmux는 이름으로만 조작 (exact-match)
 
 ## Spawn (새 세션)
@@ -32,14 +32,14 @@
 
 ### 코드 흐름
 
-1. **Registry.create()** (`registry.ts:43-58`)
+1. **Registry.create()** (registry.ts 에 구현)
    - 새 Session 생성
    - 자동 seq 증가: `s{++seq}`
    - tmuxName = `cb-s{N}`
    - state = "spawning", signal = "idle"
    - backlog = []
 
-2. **spawnSession()** (`dispatcher-core.ts:37-68`)
+2. **spawnSession()** (dispatcher-core.ts:43-87)
    - Claude Code CLI 시작 명령어 구성
    - tmux.newSession() 호출:
      ```
@@ -53,18 +53,18 @@
    - 환경변수: CB_DISPATCHER_SOCKET, CB_SESSION_ID, CB_POLL_DISABLED
    - 플래그: --disallowedTools, --allowedTools (도구 화이트리스트), --channels (MCP 채널 등록)
 
-3. **onSpawned 콜백** (`dispatcher.ts`)
+3. **onSpawned 콜백** (dispatcher.ts)
    - confirmTrustDialog() — "Trust this folder?" 프롬프트 자동 확인 (polling)
 
-4. **hello 메시지** (`server.ts:174`)
+4. **hello 메시지** (server.ts)
    - MCP server가 startup 후 dispatcher에 hello 메시지 전송
    - Registry.attachSocket(session_id, socket_id) — socket 등록
 
-5. **Registry.updateState()** (`dispatcher.ts:96`)
+5. **Registry.updateState()** (dispatcher.ts)
    - state = "idle" (hello 수신 후)
 
 ### 실패 시 cleanup
-세션 생성 실패 시 Registry에서 제거 (`dispatcher-core.ts:61-63`)
+세션 생성 실패 시 Registry에서 제거 (dispatcher-core.ts:80-82)
 
 ## Resume (기존 세션 복원)
 
@@ -80,7 +80,7 @@
 
 ### 코드 흐름
 
-1. **findSessions()** (`sessions.ts:77-127`)
+1. **findSessions()** (sessions.ts 에 구현)
    - ~/.claude/projects/ 스캔 (디렉토리 목록)
    - 각 디렉토리의 *.jsonl 파일 (세션 기록) 파싱
    - JSONL 해석:
@@ -89,12 +89,12 @@
      - timestamp 필드의 최신값 → activity time
    - 최신순 정렬, 상위 N개 반환
 
-2. **formatSessionList()** (`sessions.ts:154-163`)
+2. **formatSessionList()** (sessions.ts 에 구현)
    - "1. [MM/DD HH:MM] project · title" 형식 표시
 
-3. **resumePicked()** (`dispatcher.ts:238-271`)
+3. **resumePicked()** (dispatcher.ts 에 구현)
    - 인덱스 또는 ID로 세션 lookup
-   - getSessionCwd(sessionId) — ~/.claude/projects 에서 cwd 복구 (`sessions.ts:129-152`)
+   - getSessionCwd(sessionId) — ~/.claude/projects 에서 cwd 복구
    - cwd 체크: 디스크에 존재하는가?
    - spawnSession() 호출, 옵션:
      - `resumeId: info.id` — Claude Code에 `--resume {id}` 플래그 전달
@@ -106,7 +106,7 @@
    - 같은 session_id 유지
 
 ### 폴더 신뢰 및 권한 자동 승인
-resume 시에도 "Trust this folder?" 프롬프트 가능. dispatcher가 자동 확인함 (`confirmTrustDialog()`)
+resume 시에도 "Trust this folder?" 프롬프트 가능. dispatcher가 자동 확인함
 
 ## Fork (새 세션 ID로 resume)
 
@@ -137,16 +137,16 @@ claude --resume {old_id} --fork-session ...
 
 ### 코드 흐름
 
-1. **Registry.get() / Registry.getByLabel()** (`dispatcher-core.ts:77-78`)
+1. **Registry.get() / Registry.getByLabel()** (dispatcher-core.ts:96-97)
    - 세션 lookup
 
-2. **tmux.killSession()** (`dispatcher-core.ts:80`)
+2. **tmux.killSession()** (dispatcher-core.ts:99)
    - `tmux kill-session -t =cb-s1`
 
-3. **socket.close()** (`dispatcher-core.ts:82`)
+3. **socket.close()** (dispatcher-core.ts:100)
    - IPC 소켓 종료 (active MCP server)
 
-4. **Registry.remove()** (`dispatcher-core.ts:83`)
+4. **Registry.remove()** (dispatcher-core.ts:101)
    - 메모리에서 제거
    - 활성 세션이라면, 다음 세션으로 전환
 
@@ -187,13 +187,13 @@ spawning → idle ↔ busy
 - `trust_prompt` — 폴더 신뢰 프롬프트
 - `resume_picker` — resume 선택지 표시
 
-`observe()` 함수가 pane tail 20줄을 정규식으로 분석 (`observer.ts:24-35`)
+`observe()` 함수가 pane tail 20줄을 정규식으로 분석 (observer.ts 에 구현)
 
 ## PID Lock (중복 실행 방지)
 
 **파일**: `~/.claude-bridge/telegram/bot.pid`
 
-**acquirePollingLock()** (`lifecycle.ts:26-48`)
+**acquirePollingLock()** (lifecycle.ts 에 구현)
 1. 기존 PID 파일 읽기
 2. 기존 PID가 살아있는가?
    - Yes: SIGTERM 전송, 2초 대기
@@ -201,14 +201,14 @@ spawning → idle ↔ busy
    - anomaly log: "stale_instance_evicted"
 3. 자신의 PID 파일에 쓰기
 
-**releasePollingLock()** (`lifecycle.ts:50-55`)
+**releasePollingLock()** (lifecycle.ts 에 구현)
 - 자신의 PID와 일치하면 파일 삭제
 
-사용 위치: dispatcher 시작 시 (`dispatcher.ts:363`)
+사용 위치: dispatcher 시작 시
 
 ## Orphan Watchdog
 
-**startOrphanWatchdog()** (`lifecycle.ts:83-105`)
+**startOrphanWatchdog()** (lifecycle.ts 에 구현)
 
 5초마다 확인:
 1. stdin.destroyed? → orphan 감지 (원 프로세스 종료)
@@ -222,14 +222,14 @@ spawning → idle ↔ busy
 
 ## Graceful Shutdown
 
-**installShutdownHandlers()** (`lifecycle.ts:59-81`)
+**installShutdownHandlers()** (lifecycle.ts 에 구현)
 
 신호 감지 (SIGINT, SIGTERM, SIGHUP) + stdin end/close:
 1. 첫 호출만 처리 (중복 방지)
 2. onShutdown 콜백 실행
 3. 2초 대기 후 process.exit(0)
 
-**dispatcher 의 shutdown()** (`dispatcher.ts`)
+**dispatcher 의 shutdown()** (dispatcher.ts)
 
 async 흐름 — Claude 가 `~/.claude/projects` JSONL 을 저장할 수 있도록 graceful
 `/exit` 을 먼저 보낸다:
@@ -249,7 +249,7 @@ anomaly log: "shutdown" with reason
 
 ## Startup Orphan Reconciliation
 
-**reconcileOrphans(registry)** (`dispatcher.ts`)
+**reconcileOrphans(registry)** (dispatcher.ts:57-90)
 
 dispatcher 는 매 startup 시 tmux 를 신뢰원으로 삼아 registry 와 대조:
 
@@ -262,18 +262,18 @@ dispatcher 는 매 startup 시 tmux 를 신뢰원으로 삼아 registry 와 대�
 
 ## Active Session 추적
 
-**Registry.active()** (`registry.ts:39-41`)
+**Registry.active()** (registry.ts 에 구현)
 - 현재 활성 세션 (메시지 수신 대상)
 
-**Registry.setActive()** (`registry.ts:60-64`)
+**Registry.setActive()** (registry.ts 에 구현)
 - `/switch <id|label>` 또는 새 spawn 시 자동 설정
 
-**세션 제거 시** (`registry.ts:66-72`)
+**세션 제거 시** (registry.ts 에 구현)
 - 활성 세션이 제거되면, 남은 첫 번째 세션으로 전환
 
 ## Backlog
 
-각 세션은 최근 100개 메시지 backog 저장 (`registry.ts:94-99`):
+각 세션은 최근 100개 메시지 backog 저장 (registry.ts):
 ```
 s.backlog.push(entry)  // "← hello world", "← /status" 등
 ```

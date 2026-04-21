@@ -94,7 +94,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -115,7 +114,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -134,7 +132,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -154,7 +151,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -173,7 +169,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -203,7 +198,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -232,7 +226,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -251,7 +244,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -272,7 +264,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -292,7 +283,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -312,7 +302,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -334,7 +323,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -354,7 +342,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -373,7 +360,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -394,7 +380,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -414,7 +399,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -436,7 +420,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: mock(async () => {}),
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -462,7 +445,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: updatePinMock,
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 
@@ -485,7 +467,6 @@ describe("SlashHandler", () => {
         tg,
         sessions,
         doUpdateActivePin: updatePinMock,
-        renderStatus: () => "status",
       };
       const handler = new SlashHandler(deps);
 

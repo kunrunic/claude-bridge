@@ -34,7 +34,6 @@ export type SlashHandlerDeps = {
   tg: TelegramClient;
   sessions: SessionManager;
   doUpdateActivePin: () => Promise<void>;
-  renderStatus: () => string;
 };
 
 export class SlashHandler {
@@ -118,7 +117,6 @@ export class SlashHandler {
       resume: (target, fork) => sessions.resume(target, fork),
       listRecent: () => sessions.listRecent(),
       kill: (target) => sessions.kill(target),
-      renderStatus: this.deps.renderStatus,
     };
 
     const reply = core.handleSlash(coreDeps, cmd);
