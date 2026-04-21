@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { basename } from "node:path";
 import type { Registry } from "./registry.ts";
 import type { SlashCommand } from "./slash.ts";
 import type { LineSocket } from "./ipc.ts";
@@ -44,7 +45,9 @@ export function spawnSession(
   deps: SpawnDeps,
   opts: SpawnOptions = {},
 ): { id: string; label: string } {
-  const session = deps.registry.create(opts.label);
+  const cwd = opts.cwd ?? deps.cfg.botWorkspaceDir;
+  const label = opts.label ?? basename(cwd);
+  const session = deps.registry.create(label);
   // collision avoidance: if another tmux session already owns the default
   // name (e.g. user-created `cb-s1` or a prior unclean dispatcher crash left
   // it behind), append a random suffix.
@@ -54,7 +57,6 @@ export function spawnSession(
     deps.registry.updateState(session.id, { tmuxName: unique });
     session.tmuxName = unique;
   }
-  const cwd = opts.cwd ?? deps.cfg.botWorkspaceDir;
   try {
     const denyArg = deps.cfg.blockedTools.join(",");
     const allowArg = deps.cfg.allowedTools.join(",");
@@ -105,7 +107,7 @@ export function killSession(deps: KillDeps, target: string): boolean {
 
 export type HandleSlashDeps = {
   registry: Registry;
-  spawn: (opts: { label?: string; cwd?: string }) => {
+  spawn: (opts: { cwd?: string }) => {
     id: string;
     label: string;
   };
@@ -132,8 +134,7 @@ export function handleSlash(
     }
     case "new": {
       try {
-        const opts: { label?: string; cwd?: string } = {};
-        if (cmd.label !== undefined) opts.label = cmd.label;
+        const opts: { cwd?: string } = {};
         if (cmd.cwd !== undefined) opts.cwd = cmd.cwd;
         const r = deps.spawn(opts);
         return `spawned ${r.id} (${r.label})`;

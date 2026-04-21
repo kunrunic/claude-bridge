@@ -43,7 +43,7 @@ export class SlashHandler {
   // Keyed by chatId (one pending request per chat at a time).
   private readonly pendingNewRequests = new Map<
     string,
-    { label?: string; cwd?: string }
+    { cwd?: string }
   >();
 
   constructor(private readonly deps: SlashHandlerDeps) {}
@@ -91,16 +91,14 @@ export class SlashHandler {
     }
 
     if (cmd.kind === "new") {
-      // Preserve label/cwd so the subsequent permission-picker callback can spawn correctly.
-      const opts: { label?: string; cwd?: string } = {};
-      if (cmd.label !== undefined) opts.label = cmd.label;
+      const opts: { cwd?: string } = {};
       if (cmd.cwd !== undefined) opts.cwd = cmd.cwd;
       this.pendingNewRequests.set(chatId, opts);
       const kb = new InlineKeyboard();
       kb.text("🔒 권한 확인 포함", "new_normal:").row();
       kb.text("🔴 권한 확인 스킵", "new_skip:").row();
       kb.text("✖ cancel", "cancel:").row();
-      const preview = cmd.label || cmd.cwd ? `\n(${[cmd.label, cmd.cwd].filter(Boolean).join(" · ")})` : "";
+      const preview = cmd.cwd ? `\n(${cmd.cwd})` : "";
       await tg.sendWithKeyboard(chatId, `새 세션 권한 설정:${preview}`, kb).catch(() => {});
       return;
     }
@@ -165,8 +163,7 @@ export class SlashHandler {
       const skipPermissions = action === "new_skip";
       const pending = this.pendingNewRequests.get(chatId) ?? {};
       this.pendingNewRequests.delete(chatId);
-      const spawnOpts: { skipPermissions: boolean; label?: string; cwd?: string } = { skipPermissions };
-      if (pending.label !== undefined) spawnOpts.label = pending.label;
+      const spawnOpts: { skipPermissions: boolean; cwd?: string } = { skipPermissions };
       if (pending.cwd !== undefined) spawnOpts.cwd = pending.cwd;
       try {
         const r = sessions.spawn(spawnOpts);

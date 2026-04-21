@@ -57,12 +57,26 @@ describe("spawnSession", () => {
   test("creates session, spawns tmux, marks spawning", () => {
     const registry = new Registry();
     const tmux = fakeTmux();
-    const r = spawnSession({ registry, tmux, cfg }, { label: "backend" });
+    const r = spawnSession({ registry, tmux, cfg }, { cwd: "/tmp/backend" });
     expect(r.label).toBe("backend");
     expect(tmux.spawned.length).toBe(1);
-    expect(tmux.spawned[0]!.cwd).toBe("/tmp/bot-ws");
+    expect(tmux.spawned[0]!.cwd).toBe("/tmp/backend");
     const s = registry.get(r.id)!;
     expect(s.state).toBe("spawning");
+  });
+
+  test("label 미지정 시 cwd basename 사용", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    const r = spawnSession({ registry, tmux, cfg }, { cwd: "/home/user/my-project" });
+    expect(r.label).toBe("my-project");
+  });
+
+  test("cwd 미지정 시 botWorkspaceDir basename 사용", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    const r = spawnSession({ registry, tmux, cfg });
+    expect(r.label).toBe("bot-ws");
   });
 
   test("custom cwd overrides default", () => {
@@ -203,7 +217,7 @@ describe("killSession", () => {
 
 describe("handleSlash", () => {
   type TestDeps = HandleSlashDeps & {
-    spawnCalls: Array<{ label?: string; cwd?: string }>;
+    spawnCalls: Array<{ cwd?: string }>;
     resumeCalls: Array<{ target: string; fork: boolean }>;
     killCalls: string[];
     listRecentCount: { n: number };
@@ -211,7 +225,7 @@ describe("handleSlash", () => {
 
   function makeDeps(): TestDeps {
     const registry = new Registry();
-    const spawnCalls: Array<{ label?: string; cwd?: string }> = [];
+    const spawnCalls: Array<{ cwd?: string }> = [];
     const resumeCalls: Array<{ target: string; fork: boolean }> = [];
     const killCalls: string[] = [];
     const listRecentCount = { n: 0 };
@@ -219,7 +233,8 @@ describe("handleSlash", () => {
       registry,
       spawn: (opts) => {
         spawnCalls.push(opts);
-        const s = registry.create(opts.label);
+        const label = opts.cwd ? opts.cwd.split("/").pop()! : "bot";
+        const s = registry.create(label);
         return { id: s.id, label: s.label };
       },
       resume: (target, fork) => {
@@ -254,15 +269,15 @@ describe("handleSlash", () => {
 
   test("/new spawns and reports", () => {
     const deps = makeDeps();
-    const r = handleSlash(deps, { kind: "new", label: "backend" });
+    const r = handleSlash(deps, { kind: "new", cwd: "/tmp/backend" });
     expect(r).toMatch(/spawned/);
-    expect(deps.spawnCalls).toEqual([{ label: "backend" }]);
+    expect(deps.spawnCalls).toEqual([{ cwd: "/tmp/backend" }]);
   });
 
   test("/new passes cwd through", () => {
     const deps = makeDeps();
-    handleSlash(deps, { kind: "new", label: "backend", cwd: "/tmp/x" });
-    expect(deps.spawnCalls[0]).toEqual({ label: "backend", cwd: "/tmp/x" });
+    handleSlash(deps, { kind: "new", cwd: "/tmp/x" });
+    expect(deps.spawnCalls[0]).toEqual({ cwd: "/tmp/x" });
   });
 
   test("/new reports spawn failure cleanly", () => {

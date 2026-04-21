@@ -65,21 +65,17 @@ describe("slash parser", () => {
   test("/sessions", () => {
     expect(slash.parse("/sessions")).toEqual({ kind: "sessions" });
   });
-  test("/new with label", () => {
-    expect(slash.parse("/new backend")).toEqual({ kind: "new", label: "backend" });
-  });
-  test("/new no label", () => {
+  test("/new no arg → cwd 없음", () => {
     expect(slash.parse("/new")).toEqual({ kind: "new" });
   });
-  test("/new label + cwd", () => {
-    expect(slash.parse("/new backend /tmp/x")).toEqual({
-      kind: "new",
-      label: "backend",
-      cwd: "/tmp/x",
-    });
-  });
-  test("/new single arg starting with / → cwd only", () => {
+  test("/new /tmp/x → cwd=/tmp/x", () => {
     expect(slash.parse("/new /tmp/x")).toEqual({ kind: "new", cwd: "/tmp/x" });
+  });
+  test("/new ~/cb_test → cwd=~/cb_test", () => {
+    expect(slash.parse("/new ~/cb_test")).toEqual({ kind: "new", cwd: "~/cb_test" });
+  });
+  test("/new arg with spaces → cwd 로 처리", () => {
+    expect(slash.parse("/new /tmp/my dir")).toEqual({ kind: "new", cwd: "/tmp/my dir" });
   });
   test("/resume no arg", () => {
     expect(slash.parse("/resume")).toEqual({ kind: "resume" });

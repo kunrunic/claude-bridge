@@ -254,7 +254,7 @@ describe("SlashHandler", () => {
       expect((sessions.spawn as ReturnType<typeof mock>).mock.calls.length).toBe(0);
     });
 
-    test("{kind:'new', label, cwd} → picker 에 label/cwd preview 표시, pending 저장", async () => {
+    test("{kind:'new', cwd} → picker 에 cwd preview 표시, pending 저장", async () => {
       const registry = new Registry();
       const tg = fakeTelegramClient();
       const sessions = fakeSessionManager();
@@ -266,14 +266,13 @@ describe("SlashHandler", () => {
       };
       const handler = new SlashHandler(deps);
 
-      await handler.handle({ kind: "new", label: "mylabel", cwd: "/tmp/mycwd" }, "chat1");
+      await handler.handle({ kind: "new", cwd: "/tmp/mycwd" }, "chat1");
 
       const kbMsg = tg.sendWithKeyboardCalls[0]![1];
-      expect(kbMsg).toContain("mylabel");
       expect(kbMsg).toContain("/tmp/mycwd");
     });
 
-    test("/new label/cwd → new_normal 콜백에서 spawn 인자로 전달됨", async () => {
+    test("/new cwd → new_normal 콜백에서 spawn 인자로 전달됨", async () => {
       const registry = new Registry();
       const tg = fakeTelegramClient();
       const sessions = fakeSessionManager();
@@ -285,20 +284,17 @@ describe("SlashHandler", () => {
       };
       const handler = new SlashHandler(deps);
 
-      // Step 1: /new label cwd → pending 저장 + picker 표시
-      await handler.handle({ kind: "new", label: "mylabel", cwd: "/tmp/mycwd" }, "chat1");
-      // Step 2: 퍼미션 선택 (new_normal 클릭)
+      await handler.handle({ kind: "new", cwd: "/tmp/mycwd" }, "chat1");
       await handler.onSessionAction("new_normal", "", "chat1", 999);
 
       const spawnArgs = (sessions.spawn as ReturnType<typeof mock>).mock.calls[0]![0];
       expect(spawnArgs).toEqual({
         skipPermissions: false,
-        label: "mylabel",
         cwd: "/tmp/mycwd",
       });
     });
 
-    test("/new label → new_skip 콜백에서 skipPermissions=true 와 함께 전달", async () => {
+    test("/new cwd → new_skip 콜백에서 skipPermissions=true 와 함께 전달", async () => {
       const registry = new Registry();
       const tg = fakeTelegramClient();
       const sessions = fakeSessionManager();
@@ -310,11 +306,11 @@ describe("SlashHandler", () => {
       };
       const handler = new SlashHandler(deps);
 
-      await handler.handle({ kind: "new", label: "test" }, "chat1");
+      await handler.handle({ kind: "new", cwd: "~/cb_test" }, "chat1");
       await handler.onSessionAction("new_skip", "", "chat1", 999);
 
       const spawnArgs = (sessions.spawn as ReturnType<typeof mock>).mock.calls[0]![0];
-      expect(spawnArgs).toEqual({ skipPermissions: true, label: "test" });
+      expect(spawnArgs).toEqual({ skipPermissions: true, cwd: "~/cb_test" });
     });
 
     test("/new → cancel 시 pending 지워짐 (다음 /new 에 누적 안 됨)", async () => {
@@ -329,15 +325,15 @@ describe("SlashHandler", () => {
       };
       const handler = new SlashHandler(deps);
 
-      await handler.handle({ kind: "new", label: "first" }, "chat1");
+      await handler.handle({ kind: "new", cwd: "/tmp/first" }, "chat1");
       await handler.onSessionAction("cancel", "", "chat1", 999);
 
-      // 두 번째 /new 는 label 없음
+      // 두 번째 /new 는 cwd 없음
       await handler.handle({ kind: "new" }, "chat1");
       await handler.onSessionAction("new_normal", "", "chat1", 1000);
 
       const spawnArgs = (sessions.spawn as ReturnType<typeof mock>).mock.calls[0]![0];
-      expect(spawnArgs.label).toBeUndefined();
+      expect(spawnArgs.cwd).toBeUndefined();
     });
 
     test("{kind:'kill', target:'s1'} → sessions.kill called", async () => {
