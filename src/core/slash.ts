@@ -2,7 +2,7 @@ export type SlashCommand =
   | { kind: "sessions" }
   | { kind: "new"; label?: string; cwd?: string }
   | { kind: "switch"; target: string }
-  | { kind: "kill"; target: string }
+  | { kind: "kill"; target?: string }
   | { kind: "current" }
   | { kind: "backlog"; target?: string }
   | { kind: "resume"; target?: string }
@@ -40,8 +40,7 @@ export function parse(text: string): SlashCommand | undefined {
       if (!arg) return undefined;
       return { kind: "switch", target: arg };
     case "kill":
-      if (!arg) return undefined;
-      return { kind: "kill", target: arg };
+      return arg ? { kind: "kill", target: arg } : { kind: "kill" };
     case "current":
       return { kind: "current" };
     case "backlog":
@@ -58,15 +57,13 @@ export function parse(text: string): SlashCommand | undefined {
 }
 
 export const BOT_COMMANDS: Array<{ command: string; description: string }> = [
-  { command: "sessions", description: "list active sessions" },
-  { command: "new", description: "spawn new session — /new [label] [cwd]" },
-  { command: "resume", description: "list / resume Claude session (same id)" },
-  { command: "fork", description: "resume but start new session-id (inherits context)" },
-  { command: "switch", description: "make a session active — /switch <id|label>" },
-  { command: "kill", description: "terminate a session — /kill <id|label>" },
-  { command: "current", description: "show the active session" },
-  { command: "backlog", description: "show backlog — /backlog [id|label]" },
-  { command: "status", description: "24h anomaly summary" },
+  { command: "sessions", description: "세션 목록 / 전환" },
+  { command: "new", description: "새 세션 시작 — /new [label] [cwd]" },
+  { command: "resume", description: "이전 세션 복원" },
+  { command: "fork", description: "이전 세션 컨텍스트 이어 새 세션 시작" },
+  { command: "kill", description: "세션 종료 — /kill <id|label>" },
+  { command: "current", description: "현재 활성 세션 확인" },
+  { command: "status", description: "24h 이상 요약" },
 ];
 
 export function help(): string {

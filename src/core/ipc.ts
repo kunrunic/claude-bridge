@@ -43,13 +43,19 @@ export type IpcShutdown = {
   op: "shutdown";
 };
 
+export type IpcReplySent = {
+  op: "reply_sent";
+  session_id: string;
+};
+
 export type IpcMessage =
   | IpcHello
   | IpcInbound
   | IpcPermissionRequest
   | IpcPermissionReply
   | IpcSignal
-  | IpcShutdown;
+  | IpcShutdown
+  | IpcReplySent;
 
 export class LineSocket {
   private buf = "";

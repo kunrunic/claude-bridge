@@ -13,6 +13,8 @@ export const paths = {
   registryPath: join(CB_HOME, "registry.json"),
   workspacesRoot: join(CB_HOME, "workspaces"),
   logsDir: join(CB_HOME, "logs"),
+  channelPromptFile: join(CB_HOME, "channel-prompt.txt"),
+  mcpConfigFile: join(CB_HOME, "mcp.json"),
 } as const;
 
 export const CB_INSTANCE =

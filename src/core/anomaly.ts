@@ -45,7 +45,13 @@ export type AnomalyKind =
   | "anomaly_self_error"
   | "shutdown"
   | "stale_instance_evicted"
-  | "orphan_detected";
+  | "orphan_detected"
+  | "rate_limit_hit"
+  | "server_startup"
+  | "ipc_connect_start"
+  | "ipc_connect_ok"
+  | "ipc_connect_failed"
+  | "ipc_hello_received";
 
 export function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void {
   try {

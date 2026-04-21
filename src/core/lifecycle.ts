@@ -61,6 +61,10 @@ export function installShutdownHandlers(onShutdown: ShutdownFn): void {
   const run = (reason: string): void => {
     if (triggered) return;
     triggered = true;
+    // Safety guard: if the process hangs after shutdown, force-exit.
+    // The timer is ref'd (not unref'd) so it fires even if the event loop
+    // is idle — avoids the 2-second post-shutdown delay that caused SIGKILL.
+    const forceExit = setTimeout(() => process.exit(1), FORCE_EXIT_MS);
     Promise.resolve(onShutdown(reason))
       .catch((err) =>
         anomaly.log("anomaly_self_error", {
@@ -70,7 +74,8 @@ export function installShutdownHandlers(onShutdown: ShutdownFn): void {
         }),
       )
       .finally(() => {
-        setTimeout(() => process.exit(0), FORCE_EXIT_MS).unref();
+        clearTimeout(forceExit);
+        process.exit(0);
       });
   };
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {

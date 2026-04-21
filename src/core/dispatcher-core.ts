@@ -20,6 +20,9 @@ export type SpawnConfig = {
   allowedTools: string[];
   socketPath: string;
   botWorkspaceDir: string;
+  skipPermissions: boolean;
+  channelPromptFile: string;
+  mcpConfigFile: string;
 };
 
 export type SpawnDeps = {
@@ -34,6 +37,7 @@ export type SpawnOptions = {
   cwd?: string;
   resumeId?: string;
   forkSession?: boolean;
+  skipPermissions?: boolean;
 };
 
 export function spawnSession(
@@ -57,11 +61,15 @@ export function spawnSession(
     const resumeArgs = opts.resumeId
       ? ` --resume ${opts.resumeId}${opts.forkSession ? " --fork-session" : ""}`
       : "";
+    const skipPerm = opts.skipPermissions ?? deps.cfg.skipPermissions;
+    const skipPermArgs = skipPerm ? " --dangerously-skip-permissions" : "";
     deps.tmux.newSession({
       name: session.tmuxName,
       command:
-        `claude --disallowedTools ${denyArg} --allowedTools ${allowArg}${resumeArgs} ` +
-        `--dangerously-load-development-channels server:${deps.cfg.channelName}`,
+        `claude --disallowedTools ${denyArg} --allowedTools ${allowArg}${resumeArgs}${skipPermArgs}` +
+        ` --append-system-prompt-file "${deps.cfg.channelPromptFile}"` +
+        ` --mcp-config "${deps.cfg.mcpConfigFile}"` +
+        ` --dangerously-load-development-channels server:${deps.cfg.channelName}`,
       cwd,
       env: {
         CB_DISPATCHER_SOCKET: deps.cfg.socketPath,
@@ -154,6 +162,7 @@ export function handleSlash(
       }`;
     }
     case "kill": {
+      if (!cmd.target) return "use /kill <id|label>, or /kill with no arg for a session picker";
       return deps.kill(cmd.target)
         ? `killed ${cmd.target}`
         : `no such session: ${cmd.target}`;

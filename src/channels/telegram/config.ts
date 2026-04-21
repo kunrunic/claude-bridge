@@ -8,6 +8,7 @@ const ConfigSchema = z.object({
   allowlist: z.array(z.string()).default([]),
   defaultChatId: z.string().optional(),
   dumpEnabled: z.boolean().default(false),
+  skipPermissions: z.boolean().default(false),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

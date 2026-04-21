@@ -40,6 +40,7 @@ export class Registry {
   private seq = 0;
   private persistPath: string | undefined;
   private activePin: { chatId: string; messageId: number } | undefined;
+  private tmuxPrefix = "cb-";
 
   list(): Session[] {
     return [...this.sessions.values()];
@@ -61,13 +62,22 @@ export class Registry {
     return this.activeId ? this.sessions.get(this.activeId) : undefined;
   }
 
+  setTmuxPrefix(prefix: string): void {
+    this.tmuxPrefix = prefix;
+  }
+
+  resetSeq(): void {
+    this.seq = 0;
+    this.persist();
+  }
+
   create(label?: string, tmuxNameOverride?: string): Session {
     this.seq += 1;
     const id = `s${this.seq}`;
     const session: Session = {
       id,
       label: label ?? id,
-      tmuxName: tmuxNameOverride ?? `cb-${id}`,
+      tmuxName: tmuxNameOverride ?? `${this.tmuxPrefix}${id}`,
       state: "spawning",
       signal: "idle",
       backlog: [],

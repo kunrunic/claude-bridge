@@ -3,7 +3,7 @@ import { Registry } from "../src/core/registry.ts";
 import * as slash from "../src/core/slash.ts";
 import { observe } from "../src/core/observer.ts";
 import { CALLBACK_RE, REPLY_RE } from "../src/channels/telegram/permissions.ts";
-import { CONFLICT_RE } from "../src/channels/telegram/poller.ts";
+import { CONFLICT_RE, SESSION_CB_RE } from "../src/channels/telegram/poller.ts";
 import { assertSendable, chunkByNewline } from "../src/channels/telegram/server.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,30 @@ describe("registry", () => {
     expect(r.active()?.id).toBe("s1");
     r.setActive("s2");
     expect(r.active()?.id).toBe("s2");
+  });
+
+  test("resetSeq restarts id from s1", () => {
+    const r = new Registry();
+    r.create("alpha");
+    r.create("beta");
+    r.remove("s1");
+    r.remove("s2");
+    r.resetSeq();
+    const s = r.create("gamma");
+    expect(s.id).toBe("s1");
+  });
+
+  test("setTmuxPrefix uses prefix for new sessions", () => {
+    const r = new Registry();
+    r.setTmuxPrefix("cb-work-");
+    const s = r.create("alpha");
+    expect(s.tmuxName).toBe("cb-work-s1");
+  });
+
+  test("default tmux prefix is cb-", () => {
+    const r = new Registry();
+    const s = r.create("alpha");
+    expect(s.tmuxName).toBe("cb-s1");
   });
 
   test("lookup by id or label", () => {
@@ -77,6 +101,12 @@ describe("slash parser", () => {
   test("/fork with index", () => {
     expect(slash.parse("/fork 2")).toEqual({ kind: "fork", target: "2" });
   });
+  test("/kill no arg → picker intent", () => {
+    expect(slash.parse("/kill")).toEqual({ kind: "kill" });
+  });
+  test("/kill with target", () => {
+    expect(slash.parse("/kill s1")).toEqual({ kind: "kill", target: "s1" });
+  });
   test("/switch requires arg", () => {
     expect(slash.parse("/switch")).toBeUndefined();
     expect(slash.parse("/switch s2")).toEqual({ kind: "switch", target: "s2" });
@@ -93,6 +123,16 @@ describe("observer", () => {
   test("busy detected", () => {
     expect(observe("⏺ Running…\nesc to interrupt").signal).toBe("busy");
   });
+  test("busy detected (Claude v2.1.x token counter)", () => {
+    const pane = "✻ Nebulizing… (2s · ↑ 77 tokens)\n────\n❯ \n────";
+    expect(observe(pane).signal).toBe("busy");
+  });
+  test("busy detected (various verbs)", () => {
+    for (const verb of ["Brewing", "Churning", "Cogitating", "Sautéing"]) {
+      const pane = `✻ ${verb}… (15s · ↓ 342 tokens)\n❯ `;
+      expect(observe(pane).signal).toBe("busy");
+    }
+  });
   test("idle prompt", () => {
     expect(observe("last message\n❯ ").signal).toBe("idle");
   });
@@ -101,6 +141,41 @@ describe("observer", () => {
   });
   test("context limit", () => {
     expect(observe("Context limit reached, trim required").signal).toBe("context_limit");
+  });
+  test("rate limit dialog detected", () => {
+    const pane = "You've hit your limit · resets 3am (Asia/Seoul)\n❯ 1. Stop and wait";
+    expect(observe(pane).signal).toBe("rate_limit");
+  });
+});
+
+describe("session action callbacks", () => {
+  test("kill callback parsed", () => {
+    const m = SESSION_CB_RE.exec("kill:s12");
+    expect(m?.[1]).toBe("kill");
+    expect(m?.[2]).toBe("s12");
+  });
+  test("resume callback parsed", () => {
+    const m = SESSION_CB_RE.exec("resume:abc-def-123");
+    expect(m?.[1]).toBe("resume");
+    expect(m?.[2]).toBe("abc-def-123");
+  });
+  test("fork callback parsed", () => {
+    const m = SESSION_CB_RE.exec("fork:abc-123");
+    expect(m?.[1]).toBe("fork");
+    expect(m?.[2]).toBe("abc-123");
+  });
+  test("switch callback parsed", () => {
+    const m = SESSION_CB_RE.exec("switch:s3");
+    expect(m?.[1]).toBe("switch");
+    expect(m?.[2]).toBe("s3");
+  });
+  test("cancel callback parsed (empty target)", () => {
+    const m = SESSION_CB_RE.exec("cancel:");
+    expect(m?.[1]).toBe("cancel");
+    expect(m?.[2]).toBe("");
+  });
+  test("permission callback not matched", () => {
+    expect(SESSION_CB_RE.exec("perm:allow:abcde")).toBeNull();
   });
 });
 

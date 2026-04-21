@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { loadConfig } from "./channels/telegram/config.ts";
-import { paths } from "./core/paths.ts";
+import { paths, CB_INSTANCE } from "./core/paths.ts";
 import { TelegramClient } from "./channels/telegram/client.ts";
 import { Poller } from "./channels/telegram/poller.ts";
 import { Registry } from "./core/registry.ts";
 import * as slash from "./core/slash.ts";
 import * as tmux from "./core/tmux/session.ts";
-import { observe } from "./core/observer.ts";
 import {
   DEFAULT_SOCKET_PATH,
   startServer,
@@ -17,35 +16,31 @@ import {
 } from "./core/ipc.ts";
 import {
   buildCompactKeyboard,
-  buildExpandedKeyboard,
   formatCompactPrompt,
-  formatExpandedBody,
   pendingPermissions,
 } from "./channels/telegram/permissions.ts";
 import * as anomaly from "./core/anomaly.ts";
+import { updateActivePin } from "./core/pin.ts";
+import {
+  handleIpcHello,
+  handleIpcSignal,
+  handleIpcPermissionRequest,
+  handleInbound,
+  deliverPermissionReply as deliverPermissionReplyFn,
+} from "./core/dispatcher-handlers.ts";
 import {
   acquirePollingLock,
   installShutdownHandlers,
   releasePollingLock,
 } from "./core/lifecycle.ts";
+import { writeChannelPromptFile, writeMcpConfigFile } from "./core/channel-prompt.ts";
 import * as core from "./core/dispatcher-core.ts";
-import {
-  findSessions,
-  formatSessionList,
-  getSessionCwd,
-  type SessionInfo,
-} from "./core/sessions.ts";
-import { existsSync } from "node:fs";
+import { SessionManager } from "./core/SessionManager.ts";
+import { TickObserver } from "./core/TickObserver.ts";
+import { SlashHandler } from "./channels/telegram/SlashHandler.ts";
 
-const OBSERVE_TICK_MS = 5_000;
 const CHANNEL_NAME = "tg_channel";
-const DIALOG_POLL_MS = 200;
-const DIALOG_TIMEOUT_MS = 15_000;
-const TRUST_DIALOG_MARKER = "I trust this folder";
-const DEV_CHANNEL_WARNING_MARKER = "Loading development channels";
-const GRACEFUL_EXIT_WAIT_MS = 5_000;
-const GRACEFUL_EXIT_POLL_MS = 200;
-const TMUX_SESSION_PREFIX = "cb-";
+const TMUX_SESSION_PREFIX = CB_INSTANCE ? `cb-${CB_INSTANCE}-` : "cb-";
 const BLOCKED_TOOLS = [
   "mcp__plugin_telegram_telegram__reply",
   "mcp__plugin_telegram_telegram__react",
@@ -59,38 +54,6 @@ const ALLOWED_TOOLS = [
   "mcp__tg_channel__download_attachment",
 ];
 
-async function gracefulKillTmux(tmuxName: string): Promise<void> {
-  if (!tmux.hasSession(tmuxName)) return;
-  try {
-    tmux.sendKeys(tmuxName, "/exit", true);
-  } catch {
-    // if send-keys fails, fall through to force kill.
-  }
-  const deadline = Date.now() + GRACEFUL_EXIT_WAIT_MS;
-  while (Date.now() < deadline) {
-    if (!tmux.hasSession(tmuxName)) return;
-    await new Promise((r) => setTimeout(r, GRACEFUL_EXIT_POLL_MS));
-  }
-  try {
-    tmux.killSession(tmuxName);
-  } catch {
-    // already gone or tmux server died — ignore
-  }
-}
-
-/**
- * Startup orphan reconciliation.
- *
- * dispatcher owns every cb-* tmux session. after a crash, two kinds of
- * drift can occur:
- *   - stale_registry_entry: registry has a session whose tmux is already gone
- *   - unknown_tmux: a cb-* tmux exists that registry knows nothing about
- *     (likely leftover from prior crash — MCP pipe is stranded, unusable)
- *
- * we resolve both by making tmux the source of truth and clearing anything
- * that cannot be reattached. actual /resume continuity lives in Claude's
- * ~/.claude/projects JSONL, which is independent of tmux lifetime.
- */
 function reconcileOrphans(registry: Registry): void {
   for (const s of registry.list()) {
     if (!tmux.hasSession(s.tmuxName)) {
@@ -135,23 +98,20 @@ async function main(): Promise<void> {
   const botWorkspaceDir = join(paths.workspacesRoot, "bot");
   mkdirSync(botWorkspaceDir, { recursive: true });
 
-  // startup orphan reconciliation — after loadFrom but before setPersistPath
-  // so the cleanup itself is persisted exactly once at the end.
+  writeChannelPromptFile(paths.channelPromptFile);
+  const serverAbs = writeMcpConfigFile(paths.mcpConfigFile, CHANNEL_NAME);
+  anomaly.log("server_startup", {
+    where: "dispatcher.main",
+    mcpConfigFile: paths.mcpConfigFile,
+    serverAbs,
+  });
   reconcileOrphans(registry);
   registry.setPersistPath(paths.registryPath);
+  registry.setTmuxPrefix(TMUX_SESSION_PREFIX);
+  registry.resetSeq();
 
   const sockets = new Map<string, LineSocket>();
   const permissionToSession = new Map<string, string>();
-
-  const ipcServer = startServer(socketPath, (ls) => {
-    const socketId = randomUUID();
-    sockets.set(socketId, ls);
-    ls.onMessage((msg) => handleIpc(socketId, ls, msg));
-    ls.onClose(() => {
-      sockets.delete(socketId);
-      registry.detachSocket(socketId);
-    });
-  });
 
   function announce(text: string): void {
     if (!config.defaultChatId) return;
@@ -163,100 +123,10 @@ async function main(): Promise<void> {
     });
   }
 
-  function handleIpc(socketId: string, ls: LineSocket, msg: IpcMessage): void {
-    switch (msg.op) {
-      case "hello": {
-        registry.attachSocket(msg.session_id, socketId);
-        const s = registry.get(msg.session_id);
-        if (s) {
-          registry.updateState(msg.session_id, { state: "idle" });
-        }
-        break;
-      }
-      case "permission_request": {
-        permissionToSession.set(msg.request_id, msg.session_id);
-        pendingPermissions.set(msg.request_id, {
-          tool_name: msg.tool_name,
-          description: msg.description,
-          input_preview: msg.input_preview,
-        });
-        const session = registry.get(msg.session_id);
-        const label = session ? `[${session.label}] ` : "";
-        const keyboard = buildCompactKeyboard(msg.request_id);
-        const prompt = `${label}${formatCompactPrompt(msg.tool_name)}`;
-        for (const chatId of config.allowlist) {
-          void tg.sendWithKeyboard(chatId, prompt, keyboard).catch((err) => {
-            anomaly.log("channel_reply_failed", {
-              op: "permission_request_relay",
-              chatId,
-              requestId: msg.request_id,
-              error: String(err),
-            });
-          });
-        }
-        break;
-      }
-      case "signal": {
-        const session = registry.getBySocketId(socketId);
-        if (!session) break;
-        registry.updateState(session.id, { signal: msg.signal as never });
-        break;
-      }
-      default:
-        anomaly.log("mcp_unknown_method", {
-          where: "dispatcher.ipc",
-          op: msg.op,
-        });
-    }
-  }
-
-  function deliverPermissionReply(
-    requestId: string,
-    behavior: "allow" | "deny",
-  ): void {
-    const sessionId = permissionToSession.get(requestId);
-    permissionToSession.delete(requestId);
-    pendingPermissions.delete(requestId);
-    if (!sessionId) return;
-    const session = registry.get(sessionId);
-    if (!session || !session.socketId) return;
-    const ls = sockets.get(session.socketId);
-    if (!ls) return;
-    ls.send({ op: "permission_reply", request_id: requestId, behavior });
-  }
-
-  // Dismiss up to two startup modals:
-  //   1) "I trust this folder" — only on first visit to the cwd
-  //   2) "Loading development channels" — ALWAYS when --dangerously-load-development-channels is used
-  // Both dismiss with a single Enter. We poll the pane for each marker and send
-  // Enter as it appears. Trust dialog is optional; dev warning is expected on
-  // every spawn until a channel is promoted to a plugin install.
-  function confirmStartupDialogs(tmuxName: string, sessionId: string): void {
-    const deadline = Date.now() + DIALOG_TIMEOUT_MS;
-    const dismissed = { trust: false, devWarn: false };
-    const poll = (): void => {
-      if (Date.now() > deadline) return;
-      let pane = "";
-      try { pane = tmux.capturePane(tmuxName, 40); } catch {
-        setTimeout(poll, DIALOG_POLL_MS); return;
-      }
-      if (!dismissed.trust && pane.includes(TRUST_DIALOG_MARKER)) {
-        try { tmux.sendKeys(tmuxName, "", true); dismissed.trust = true; } catch (err) {
-          anomaly.log("session_spawn_failed", { op: "trust-dialog-confirm", session: sessionId, error: String(err) });
-        }
-      }
-      if (!dismissed.devWarn && pane.includes(DEV_CHANNEL_WARNING_MARKER)) {
-        try { tmux.sendKeys(tmuxName, "", true); dismissed.devWarn = true; } catch (err) {
-          anomaly.log("session_spawn_failed", { op: "dev-warning-confirm", session: sessionId, error: String(err) });
-        }
-      }
-      // dev warning is the one that ALWAYS appears with our flag set; once
-      // dismissed we're done. trust is best-effort.
-      if (dismissed.devWarn) return;
-      setTimeout(poll, DIALOG_POLL_MS);
-    };
-    setTimeout(poll, DIALOG_POLL_MS);
-  }
+  const doUpdateActivePin = (): Promise<void> => {
+    if (!config.defaultChatId) return Promise.resolve();
+    return updateActivePin(registry, tg, config.defaultChatId);
+  };
 
   const spawnCfg: core.SpawnConfig = {
     channelName: CHANNEL_NAME,
@@ -264,131 +134,63 @@ async function main(): Promise<void> {
     allowedTools: ALLOWED_TOOLS,
     socketPath,
     botWorkspaceDir,
+    skipPermissions: config.skipPermissions,
+    channelPromptFile: paths.channelPromptFile,
+    mcpConfigFile: paths.mcpConfigFile,
   };
 
-  // Telegram pin: 현재 active 세션을 chat 상단에 고정. activeId 가 바뀔 때마다
-  // 이전 pin 을 풀고 새 메시지를 pin 한다. defaultChatId 가 없으면 no-op.
-  async function updateActivePin(): Promise<void> {
+  const sessions = new SessionManager({
+    registry,
+    tmux,
+    sockets,
+    spawnCfg,
+    announce,
+  });
+  const BUSY_FRAMES = ["🤔", "💭", "🧐", "🤓", "💡", "🤯"];
+  const ANIM_TICK_MS = 5_000;
+  let animMsgId: number | undefined;
+  let animFrame = 0;
+  let animTimer: ReturnType<typeof setInterval> | undefined;
+
+  function startAnimation(): void {
     if (!config.defaultChatId) return;
-    const chatId = config.defaultChatId;
-    const active = registry.active();
-    const currentPin = registry.getActivePin();
-
-    if (!active) {
-      if (currentPin) {
-        await tg.unpinMessage(currentPin.chatId, currentPin.messageId).catch(() => {});
-        registry.setActivePin(undefined);
-      }
-      return;
-    }
-
-    const desired = `🧷 active: ${active.id} (${active.label})`;
-    try {
-      const newId = await tg.sendMessage(chatId, desired);
-      await tg.pinMessage(chatId, newId, true);
-      if (currentPin && (currentPin.chatId !== chatId || currentPin.messageId !== newId)) {
-        await tg.unpinMessage(currentPin.chatId, currentPin.messageId).catch(() => {});
-      }
-      registry.setActivePin({ chatId, messageId: newId });
-    } catch (err) {
-      anomaly.log("telegram_api_failed", {
-        op: "updateActivePin",
-        error: String(err),
-      });
-    }
+    if (animMsgId !== undefined || animTimer !== undefined) return;
+    animFrame = 0;
+    const firstEmoji = BUSY_FRAMES[0]!;
+    void tg.sendMessage(config.defaultChatId, firstEmoji)
+      .then((id) => { animMsgId = id; })
+      .catch(() => {});
+    animTimer = setInterval(() => {
+      if (!config.defaultChatId || animMsgId === undefined) return;
+      animFrame++;
+      const emoji = BUSY_FRAMES[animFrame % BUSY_FRAMES.length]!;
+      void tg.bot.api
+        .editMessageText(config.defaultChatId, animMsgId, emoji)
+        .catch(() => {});
+    }, ANIM_TICK_MS);
   }
 
-  const spawnSession = (opts: core.SpawnOptions = {}) => {
-    const beforeActiveId = registry.active()?.id;
-    const r = core.spawnSession(
-      {
-        registry,
-        tmux,
-        cfg: spawnCfg,
-        onSpawned: (tmuxName, sessionId) => {
-          confirmStartupDialogs(tmuxName, sessionId);
-        },
-      },
-      opts,
-    );
-    if (registry.active()?.id !== beforeActiveId) {
-      void updateActivePin();
+  function onReplySent(): void {
+    if (animTimer !== undefined) {
+      clearInterval(animTimer);
+      animTimer = undefined;
     }
-    return r;
-  };
+    if (!config.defaultChatId || animMsgId === undefined) return;
+    const msgId = animMsgId;
+    animMsgId = undefined;
+    animFrame = 0;
+    void tg.bot.api
+      .editMessageText(config.defaultChatId, msgId, "✅")
+      .then(() => new Promise<void>((r) => setTimeout(r, 5000)))
+      .then(() => tg.bot.api.deleteMessage(config.defaultChatId!, msgId))
+      .catch(() => {});
+  }
 
-  const killSession = (target: string): boolean => {
-    const beforeActiveId = registry.active()?.id;
-    const ok = core.killSession({ registry, tmux, sockets }, target);
-    if (ok && registry.active()?.id !== beforeActiveId) {
-      void updateActivePin();
-    }
-    return ok;
-  };
-
-  let pickerCache: SessionInfo[] = [];
-
-  const listRecent = (): string => {
-    pickerCache = findSessions(8);
-    return formatSessionList(pickerCache);
-  };
-
-  const resumePicked = (target: string, fork: boolean): string => {
-    let info: SessionInfo | undefined;
-    if (/^\d+$/.test(target)) {
-      const idx = Number(target) - 1;
-      if (idx < 0 || idx >= pickerCache.length) {
-        return `pick index out of range. run /resume first to refresh the list.`;
-      }
-      info = pickerCache[idx];
-    } else {
-      info = pickerCache.find((s) => s.id === target || s.id.startsWith(target));
-      if (!info) {
-        const all = findSessions(64);
-        info = all.find((s) => s.id === target || s.id.startsWith(target));
-      }
-    }
-    if (!info) return `no such session: ${target}`;
-    const cwd = getSessionCwd(info.id) ?? botWorkspaceDir;
-    if (!existsSync(cwd)) {
-      return `session cwd missing on disk: ${cwd}`;
-    }
-    try {
-      const spawnOpts: core.SpawnOptions = {
-        cwd,
-        resumeId: info.id,
-      };
-      if (info.project) spawnOpts.label = info.project;
-      if (fork) spawnOpts.forkSession = true;
-      const r = spawnSession(spawnOpts);
-      const verb = fork ? "forked" : "resumed";
-      return `${verb} ${r.id} (${r.label}) from ${info.project} · ${info.title}`;
-    } catch (err) {
-      return `spawn failed: ${String(err)}`;
-    }
-  };
-
-  const handleSlash = (cmd: slash.SlashCommand, _chatId: string): string => {
-    const beforeActiveId = registry.active()?.id;
-    const reply = core.handleSlash(
-      {
-        registry,
-        spawn: spawnSession,
-        resume: resumePicked,
-        listRecent,
-        kill: killSession,
-        renderStatus,
-      },
-      cmd,
-    );
-    // /switch 는 core 내부에서 registry.setActive 를 직접 호출하므로 spawn/kill
-    // wrapper 와 무관하게 여기서 한 번 더 체크. spawn/kill 이 이미 갱신했다면
-    // before/after 가 같아서 no-op.
-    if (registry.active()?.id !== beforeActiveId) {
-      void updateActivePin();
-    }
-    return reply;
-  };
+  const tick = new TickObserver({
+    registry,
+    tmux,
+    announce,
+  });
 
   function renderStatus(): string {
     const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -403,68 +205,105 @@ async function main(): Promise<void> {
       const last = s.lastTs.get(kind)?.slice(11, 19) ?? "";
       lines.push(`${badge}${kind}: ${count}  (last ${last})`);
     }
-    lines.push(`log: ${anomaly.LOG_FILE_PATH}`);
-    lines.push("", "help:", slash.help());
+    lines.push(`log: ${anomaly.LOG_FILE_PATH}`, "", "help:", slash.help());
     return lines.join("\n");
   }
+
+  const slashHandler = new SlashHandler({
+    registry,
+    tg,
+    sessions,
+    doUpdateActivePin,
+    renderStatus,
+  });
+
+  const ipcServer = startServer(socketPath, (ls) => {
+    const socketId = randomUUID();
+    sockets.set(socketId, ls);
+    ls.onMessage((msg: IpcMessage) => {
+      switch (msg.op) {
+        case "hello": {
+          anomaly.log("ipc_hello_received", {
+            where: "dispatcher.ipc",
+            sessionId: msg.session_id,
+            socketId,
+          });
+          const ready = handleIpcHello(registry, msg.session_id, socketId);
+          if (ready?.kind === "spawned") announce(`✅ [${ready.label}] 준비됨 — 메시지를 보내세요`);
+          if (ready?.kind === "reconnected") announce(`🔄 [${ready.label}] 재연결됨`);
+          break;
+        }
+        case "permission_request":
+          handleIpcPermissionRequest(
+            registry,
+            permissionToSession,
+            pendingPermissions,
+            tg,
+            config.allowlist,
+            buildCompactKeyboard,
+            formatCompactPrompt,
+            msg,
+          );
+          break;
+        case "signal":
+          handleIpcSignal(registry, socketId, msg.signal);
+          break;
+        case "reply_sent":
+          onReplySent();
+          break;
+        default:
+          anomaly.log("mcp_unknown_method", {
+            where: "dispatcher.ipc",
+            op: (msg as { op: string }).op,
+          });
+      }
+    });
+    ls.onClose(() => {
+      const session = registry.getBySocketId(socketId);
+      sockets.delete(socketId);
+      registry.detachSocket(socketId);
+      if (session && session.state !== "dead") {
+        announce(
+          `⚠️ [${session.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
+          `재연결 실패 시 /new 또는 /resume 으로 새 세션을 시작하세요.`,
+        );
+      }
+    });
+  });
 
   const poller = new Poller(
     tg,
     config,
-    (evt) => {
+    async (evt) => {
       const slashCmd = slash.parse(evt.content);
       if (slashCmd) {
-        const reply = handleSlash(slashCmd, evt.meta.chat_id);
-        void tg.sendMessage(evt.meta.chat_id, reply).catch(() => {});
+        await slashHandler.handle(slashCmd, evt.meta.chat_id);
         return;
       }
-
-      const active = registry.active();
-      if (!active || !active.socketId) {
-        announce("no active session — use /new to spawn one, or /sessions");
-        anomaly.log("inbound_no_active_session", {
-          preview: evt.content.slice(0, 40),
-        });
-        return;
+      const delivered = handleInbound(registry, sockets, announce, evt);
+      if (delivered) {
+        startAnimation();
+        if (evt.meta.message_id) {
+          void tg
+            .setReaction(evt.meta.chat_id, Number(evt.meta.message_id), "✍")
+            .catch(() => {});
+        }
       }
-      const ls = sockets.get(active.socketId);
-      if (!ls) {
-        anomaly.log("inbound_no_active_session", {
-          reason: "socket_missing",
-          sessionId: active.id,
-        });
-        return;
-      }
-      ls.send({
-        op: "inbound",
-        content: evt.content,
-        meta: evt.meta as Record<string, string>,
-      });
-      registry.pushBacklog(active.id, `← ${evt.content.slice(0, 120)}`);
     },
-    (requestId, behavior) => deliverPermissionReply(requestId, behavior),
+    (requestId, behavior) =>
+      deliverPermissionReplyFn(
+        permissionToSession,
+        pendingPermissions,
+        sockets,
+        registry,
+        requestId,
+        behavior,
+      ),
+    (action, target, chatId, msgId) =>
+      slashHandler.onSessionAction(action, target, chatId, msgId),
   );
 
-  const tickTimer = setInterval(() => {
-    for (const s of registry.list()) {
-      if (s.state === "dead") continue;
-      const pane = tmux.capturePane(s.tmuxName, 40);
-      if (!pane) continue;
-      const obs = observe(pane);
-      const patch: { signal: typeof obs.signal; state?: typeof s.state; busySince?: number } = {
-        signal: obs.signal,
-      };
-      if (obs.signal === "busy" || obs.signal === "compact") {
-        patch.state = "busy";
-        if (!s.busySince) patch.busySince = Date.now();
-      } else if (obs.signal === "idle") {
-        patch.state = "idle";
-      } else if (obs.signal === "compact_error" || obs.signal === "context_limit") {
-        patch.state = "error";
-      }
-      registry.updateState(s.id, patch);
-    }
-  }, OBSERVE_TICK_MS);
+  tick.start();
 
   if (process.env.CB_POLL_DISABLED !== "1") {
     await acquirePollingLock("dispatcher.ts");
@@ -472,27 +311,28 @@ async function main(): Promise<void> {
     await poller.start();
   }
 
-  // startup: reconcileOrphans 가 세션을 다 비웠으므로 이전 세션 기준으로 pin
-  // 돼있는 stale message 를 풀어준다. registry 에 active 가 없으면 unpin 만 수행.
-  void updateActivePin();
+  void doUpdateActivePin();
+  announce(
+    `🟢 claude-bridge started${CB_INSTANCE ? ` [${CB_INSTANCE}]` : ""}\n` +
+      `/new — 새 세션  /sessions — 세션 목록  /status — 상태`,
+  );
 
   async function shutdown(): Promise<void> {
-    clearInterval(tickTimer);
+    if (animTimer !== undefined) {
+      clearInterval(animTimer);
+      animTimer = undefined;
+    }
+    tick.stop();
     void poller.stop();
-    // unpin active session marker — 다음 기동 때 stale pin 으로 남지 않게
     const stalePin = registry.getActivePin();
     if (stalePin) {
       await tg.unpinMessage(stalePin.chatId, stalePin.messageId).catch(() => {});
       registry.setActivePin(undefined);
     }
-    // graceful exit first — gives Claude a chance to persist ~/.claude/projects
-    // JSONL so /resume still works after restart. keep IPC alive during this
-    // window in case any late tool calls arrive.
-    const kills = registry.list().map((s) => gracefulKillTmux(s.tmuxName));
+    const kills = registry.list().map((s) => sessions.gracefulKill(s.tmuxName));
     await Promise.all(kills);
     for (const ls of sockets.values()) ls.close();
     ipcServer.close();
-    // clear registry so the persisted snapshot reflects "no live sessions"
     for (const s of [...registry.list()]) {
       registry.remove(s.id);
     }
@@ -506,7 +346,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  anomaly.log("anomaly_self_error", { where: "dispatcher.main", error: String(err) });
+  anomaly.log("anomaly_self_error", {
+    where: "dispatcher.main",
+    error: String(err),
+  });
   console.error(err);
   process.exit(1);
 });

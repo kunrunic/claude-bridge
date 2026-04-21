@@ -48,6 +48,9 @@ const cfg: SpawnConfig = {
   allowedTools: ["y"],
   socketPath: "/tmp/sock",
   botWorkspaceDir: "/tmp/bot-ws",
+  skipPermissions: false,
+  channelPromptFile: "/tmp/channel-prompt.txt",
+  mcpConfigFile: "/tmp/mcp.json",
 };
 
 describe("spawnSession", () => {
@@ -100,6 +103,33 @@ describe("spawnSession", () => {
     });
     expect(captured[0]).toMatch(/--resume abc-123/);
     expect(captured[0]).toMatch(/--fork-session/);
+  });
+
+  test("skipPermissions=true adds --dangerously-skip-permissions flag", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    const captured: string[] = [];
+    const instrumented = Object.assign(tmux, {
+      newSession: (opts: { command: string; name: string; cwd?: string; env?: Record<string, string> }) => {
+        captured.push(opts.command);
+      },
+    });
+    const skipCfg: SpawnConfig = { ...cfg, skipPermissions: true };
+    spawnSession({ registry, tmux: instrumented, cfg: skipCfg });
+    expect(captured[0]).toMatch(/--dangerously-skip-permissions/);
+  });
+
+  test("skipPermissions=false omits --dangerously-skip-permissions", () => {
+    const registry = new Registry();
+    const tmux = fakeTmux();
+    const captured: string[] = [];
+    const instrumented = Object.assign(tmux, {
+      newSession: (opts: { command: string; name: string; cwd?: string; env?: Record<string, string> }) => {
+        captured.push(opts.command);
+      },
+    });
+    spawnSession({ registry, tmux: instrumented, cfg });
+    expect(captured[0]).not.toMatch(/--dangerously-skip-permissions/);
   });
 
   test("rolls back registry when tmux fails", () => {
@@ -282,12 +312,20 @@ describe("handleSlash", () => {
     expect(r).toMatch(/no such session/);
   });
 
-  test("/kill delegates", () => {
+  test("/kill with target delegates", () => {
     const deps = makeDeps();
     const s = deps.registry.create("alpha");
     const r = handleSlash(deps, { kind: "kill", target: s.id });
     expect(r).toMatch(/killed/);
     expect(deps.killCalls).toEqual([s.id]);
+  });
+
+  test("/kill no target → usage hint (keyboard shown at dispatcher layer)", () => {
+    const deps = makeDeps();
+    deps.registry.create("alpha");
+    const r = handleSlash(deps, { kind: "kill" });
+    expect(r).toMatch(/kill/);
+    expect(deps.killCalls).toHaveLength(0);
   });
 
   test("/current with active", () => {

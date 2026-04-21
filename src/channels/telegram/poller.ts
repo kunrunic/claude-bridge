@@ -30,12 +30,26 @@ export type InboundEvent = {
   meta: InboundMeta;
 };
 
-export type InboundHandler = (evt: InboundEvent) => void;
+export type InboundHandler = (evt: InboundEvent) => void | Promise<void>;
 export type PermissionBehavior = "allow" | "deny";
 export type PermissionReplyHandler = (
   requestId: string,
   behavior: PermissionBehavior,
 ) => void;
+
+export type SessionAction =
+  | "kill" | "resume" | "fork" | "switch" | "cancel"
+  | "new_normal" | "new_skip"
+  | "resume_normal" | "resume_skip"
+  | "fork_normal" | "fork_skip";
+export type SessionActionHandler = (
+  action: SessionAction,
+  target: string,
+  chatId: string,
+  messageId: number,
+) => Promise<void>;
+
+export const SESSION_CB_RE = /^(kill|resume|fork|switch|cancel|new_normal|new_skip|resume_normal|resume_skip|fork_normal|fork_skip):(.*)$/;
 
 const SAFE_META_RE = /[<>\[\]\r\n;]/g;
 const safe = (s: string | undefined): string | undefined =>
@@ -55,6 +69,7 @@ export class Poller {
     private readonly config: Config,
     private readonly onInbound: InboundHandler,
     private readonly onPermissionReply: PermissionReplyHandler,
+    private readonly onSessionAction?: SessionActionHandler,
   ) {}
 
   private noteConflict(errText: string): void {
@@ -183,14 +198,27 @@ export class Poller {
       await ctx.answerCallbackQuery().catch(() => {});
       return;
     }
-    const m = CALLBACK_RE.exec(data);
-    if (!m) {
-      await ctx.answerCallbackQuery().catch(() => {});
-      return;
-    }
     const senderId = String(ctx.from.id);
     if (!this.config.allowlist.includes(senderId)) {
       await ctx.answerCallbackQuery({ text: "Not authorized." }).catch(() => {});
+      return;
+    }
+
+    const sm = SESSION_CB_RE.exec(data);
+    if (sm) {
+      const action = sm[1]! as SessionAction;
+      const target = sm[2]!;
+      const msg = ctx.callbackQuery.message;
+      if (msg && this.onSessionAction) {
+        await this.onSessionAction(action, target, String(msg.chat.id), msg.message_id);
+      }
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+
+    const m = CALLBACK_RE.exec(data);
+    if (!m) {
+      await ctx.answerCallbackQuery().catch(() => {});
       return;
     }
     const behavior = m[1]!;
