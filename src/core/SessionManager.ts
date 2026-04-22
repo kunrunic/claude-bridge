@@ -18,6 +18,10 @@ const SPAWN_TIMEOUT_MS = 60_000;
 const TRUST_DIALOG_MARKER = "I trust this folder";
 const DEV_CHANNEL_WARNING_MARKER = "Loading development channels";
 const THEME_DIALOG_MARKER = "Choose the text style";
+// "Select login method" shows when claude has no auth token. We can't auto-
+// dismiss — user must log in manually on their own machine. Fail fast here
+// instead of waiting for the 60s hello timeout.
+const LOGIN_DIALOG_MARKER = "Select login method";
 const GRACEFUL_EXIT_WAIT_MS = 5_000;
 const GRACEFUL_EXIT_POLL_MS = 200;
 
@@ -99,13 +103,20 @@ export class SessionManager {
     );
   }
 
+  private filterResumable(sessions: SessionInfo[]): SessionInfo[] {
+    return sessions.filter((s) => {
+      const cwd = getSessionCwd(s.id) ?? this.deps.spawnCfg.botWorkspaceDir;
+      return existsSync(cwd);
+    });
+  }
+
   listRecent(): string {
-    this.pickerCache = findSessions(8);
+    this.pickerCache = this.filterResumable(findSessions(8));
     return formatSessionList(this.pickerCache);
   }
 
   refreshPickerCache(): SessionInfo[] {
-    this.pickerCache = findSessions(8);
+    this.pickerCache = this.filterResumable(findSessions(8));
     return this.pickerCache;
   }
 
@@ -114,7 +125,7 @@ export class SessionManager {
     if (/^\d+$/.test(target)) {
       const idx = Number(target) - 1;
       if (idx < 0 || idx >= this.pickerCache.length) {
-        return `pick index out of range. run /resume first to refresh the list.`;
+        return `⚠️ 목록 범위 초과 — /resume 다시 열어 목록을 새로 불러오세요`;
       }
       info = this.pickerCache[idx];
     } else {
@@ -126,19 +137,22 @@ export class SessionManager {
         info = all.find((s) => s.id === target || s.id.startsWith(target));
       }
     }
-    if (!info) return `no such session: ${target}`;
+    if (!info) return `⚠️ 해당 ID 세션 없음: ${target}`;
     const cwd =
       getSessionCwd(info.id) ?? this.deps.spawnCfg.botWorkspaceDir;
     if (!existsSync(cwd)) {
-      return `session cwd missing on disk: ${cwd}`;
+      return `⚠️ 세션 cwd 가 디스크에 없음: ${cwd}`;
     }
     try {
-      const spawnOpts: core.SpawnOptions = { cwd, resumeId: info.id, skipPermissions };
+      const source = `${info.project} · ${info.title}`;
+      const spawnOpts: core.SpawnOptions = { cwd, resumeId: info.id, skipPermissions, source };
       if (info.project) spawnOpts.label = info.project;
       if (fork) spawnOpts.forkSession = true;
       const r = this.spawn(spawnOpts);
-      const verb = fork ? "forked" : "resumed";
-      return `${verb} ${r.id} (${r.label}) from ${info.project} · ${info.title}`;
+      const verb = fork ? "forking" : "resuming";
+      // Terse reply — full origin (source) is surfaced in the "자동 전환됨"
+      // announce once the MCP hello lands, to keep a single clean message.
+      return `${verb} [${r.id}][${r.label}]...`;
     } catch (err) {
       return `spawn failed: ${String(err)}`;
     }
@@ -173,6 +187,27 @@ export class SessionManager {
         pane = this.deps.tmux.capturePane(tmuxName, 40);
       } catch {
         setTimeout(poll, DIALOG_POLL_MS);
+        return;
+      }
+      // Login method screen can't be auto-dismissed — fail fast and instruct
+      // the user. Kill the tmux window so they don't have to close it manually.
+      if (pane.includes(LOGIN_DIALOG_MARKER)) {
+        const session = this.deps.registry.get(sessionId);
+        const label = session?.label ?? sessionId;
+        this.deps.announce(
+          `🔐 [${sessionId}][${label}] 재인증 필요 — 사용 기기에서 claude 를 실행해 로그인한 뒤 요청하신 작업을 다시 시도하세요`,
+        );
+        anomaly.log("session_spawn_failed", {
+          op: "login-dialog-detected",
+          session: sessionId,
+          reason: "auth_required",
+        });
+        try {
+          this.deps.tmux.killSession(tmuxName);
+        } catch {
+          // best-effort — registry cleanup below is what matters for state
+        }
+        this.deps.registry.remove(sessionId);
         return;
       }
       if (!dismissed.theme && pane.includes(THEME_DIALOG_MARKER)) {

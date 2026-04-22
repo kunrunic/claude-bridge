@@ -61,7 +61,7 @@ export class TickObserver {
         const resetMatch = RATE_LIMIT_RESET_RE.exec(pane);
         const resetAt = resetMatch ? ` (${resetMatch[1]})` : "";
         this.deps.announce(
-          `⏸ rate limit hit: [${s.label}]${resetAt} — pressing Esc to wait`,
+          `⏸ rate limit hit: [${s.id}][${s.label}]${resetAt} — pressing Esc to wait`,
         );
         anomaly.log("rate_limit_hit", { sessionId: s.id, label: s.label });
         try {

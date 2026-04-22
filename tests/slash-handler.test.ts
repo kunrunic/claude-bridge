@@ -175,7 +175,7 @@ describe("SlashHandler", () => {
       await handler.handle({ kind: "resume" }, "chat1");
 
       expect(tg.sendMessageCalls.length).toBe(1);
-      expect(tg.sendMessageCalls[0]![1]).toMatch(/no recent sessions/);
+      expect(tg.sendMessageCalls[0]![1]).toMatch(/복원할 이전 세션이 없습니다/);
     });
 
     test("{kind:'resume'} no target, cache has entries → sendWithKeyboard with resume entries", async () => {

@@ -106,7 +106,7 @@ export class SlashHandler {
     if ((cmd.kind === "resume" || cmd.kind === "fork") && !cmd.target) {
       const cache = sessions.refreshPickerCache();
       if (cache.length === 0) {
-        await tg.sendMessage(chatId, "no recent sessions found").catch(() => {});
+        await tg.sendMessage(chatId, "🗂️ 복원할 이전 세션이 없습니다. /new 로 시작하세요").catch(() => {});
         return;
       }
       const verb = cmd.kind;
@@ -167,7 +167,7 @@ export class SlashHandler {
       if (pending.cwd !== undefined) spawnOpts.cwd = pending.cwd;
       try {
         const r = sessions.spawn(spawnOpts);
-        text = `spawning ${r.label}...`;
+        text = `spawning [${r.id}][${r.label}]...`;
       } catch (err) {
         text = `spawn failed: ${String(err)}`;
       }
@@ -182,7 +182,7 @@ export class SlashHandler {
         text = `no such session: ${target}`;
       } else {
         registry.setActive(s.id);
-        text = `▶ switched to ${s.label}`;
+        text = `▶ switched to [${s.id}][${s.label}]`;
       }
     } else if (action === "resume" || action === "fork") {
       // two-step: show permission picker before spawning

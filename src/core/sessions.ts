@@ -152,7 +152,7 @@ export function getSessionCwd(sessionId: string): string | undefined {
 }
 
 export function formatSessionList(list: SessionInfo[]): string {
-  if (list.length === 0) return "no recent sessions found";
+  if (list.length === 0) return "🗂️ 복원할 이전 세션이 없습니다. /new 로 시작하세요";
   const lines = ["Recent Claude sessions:"];
   list.forEach((s, i) => {
     lines.push(`${i + 1}. [${s.mtimeText}] ${s.project} · ${s.title}`);

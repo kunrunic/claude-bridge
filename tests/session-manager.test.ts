@@ -208,8 +208,8 @@ describe("SessionManager", () => {
       // (findSessions will find real sessions, so we test with an invalid index)
       const result = manager.resume("999", false);
 
-      // Either "no such session" or "pick index out of range" depending on cache state
-      expect(result).toMatch(/no such session|pick index out of range/i);
+      // Invalid index → out-of-range or no-such-session depending on cache state
+      expect(result).toMatch(/범위 초과|해당 ID 세션 없음/);
     });
   });
 

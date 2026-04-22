@@ -39,6 +39,9 @@ export type SpawnOptions = {
   resumeId?: string;
   forkSession?: boolean;
   skipPermissions?: boolean;
+  // Origin summary saved into the registry session (`source`), surfaced in
+  // the "자동 전환됨" announce. Used by /resume and /fork flows.
+  source?: string;
 };
 
 export function spawnSession(
@@ -48,6 +51,9 @@ export function spawnSession(
   const cwd = opts.cwd ?? deps.cfg.botWorkspaceDir;
   const label = opts.label ?? basename(cwd);
   const session = deps.registry.create(label);
+  if (opts.source) {
+    deps.registry.updateState(session.id, { source: opts.source });
+  }
   // collision avoidance: if another tmux session already owns the default
   // name (e.g. user-created `cb-s1` or a prior unclean dispatcher crash left
   // it behind), append a random suffix.

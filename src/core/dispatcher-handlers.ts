@@ -18,7 +18,7 @@ export function scheduleSpawnTimeout(
     const s = registry.get(sessionId);
     if (s && s.state === "spawning") {
       registry.updateState(sessionId, { state: "error" });
-      announce(`⚠️ [${label}] 기동 실패 — IPC hello 미수신 (${timeoutMs / 1000}s 초과)`);
+      announce(`⚠️ [${sessionId}][${label}] 기동 실패 — IPC hello 미수신 (${timeoutMs / 1000}s 초과)`);
       anomaly.log("session_spawn_failed", {
         sessionId,
         label,

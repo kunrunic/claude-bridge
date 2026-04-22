@@ -108,19 +108,37 @@ async function main(): Promise<void> {
   reconcileOrphans(registry);
 
   // Clean up stale pins from previous run — active pin + persisted reply pins.
+  // tg.unpinMessage retries internally; here we only decide what counts as
+  // "goal met" so we can clear registry state. "message to unpin not found"
+  // means the pin is already gone (manual unpin or message deleted) — still
+  // goal met. Any other persistent failure → keep registry entry for next
+  // startup to retry.
   if (config.defaultChatId) {
+    const chat = config.defaultChatId;
+    const isGoalMet = async (messageId: number): Promise<boolean> => {
+      try {
+        await tg.unpinMessage(chat, messageId);
+        return true;
+      } catch (err) {
+        const msg = String(err).toLowerCase();
+        return msg.includes("message to unpin not found") || msg.includes("message not found");
+      }
+    };
+
     const staleActivePin = registry.getActivePin();
-    if (staleActivePin) {
-      await tg.unpinMessage(staleActivePin.chatId, staleActivePin.messageId).catch(() => {});
+    if (staleActivePin && await isGoalMet(staleActivePin.messageId)) {
       registry.setActivePin(undefined);
     }
     const stalePinnedReplies = registry.getPinnedReplies();
-    for (const ids of Object.values(stalePinnedReplies)) {
+    const remaining: Record<string, number[]> = {};
+    for (const [sid, ids] of Object.entries(stalePinnedReplies)) {
+      const stillPinned: number[] = [];
       for (const mid of ids) {
-        await tg.unpinMessage(config.defaultChatId, mid).catch(() => {});
+        if (!(await isGoalMet(mid))) stillPinned.push(mid);
       }
+      if (stillPinned.length > 0) remaining[sid] = stillPinned;
     }
-    registry.clearPinnedReplies();
+    registry.setPinnedReplies(remaining);
   }
 
   registry.setPersistPath(paths.registryPath);
@@ -130,14 +148,26 @@ async function main(): Promise<void> {
   const sockets = new Map<string, LineSocket>();
   const permissionToSession = new Map<string, string>();
 
+  // Announce a system event. Retry/timeout is handled inside TelegramClient;
+  // here we just track the high-level outcome (start/ok/give_up).
   function announce(text: string): void {
-    if (!config.defaultChatId) return;
-    void tg.sendMessage(config.defaultChatId, text).catch((err) => {
-      anomaly.log("channel_reply_failed", {
-        op: "dispatcher.announce",
-        error: String(err),
-      });
-    });
+    const preview = text.slice(0, 80);
+    if (!config.defaultChatId) {
+      anomaly.log("dispatcher_announce_skip", { reason: "no_default_chat", preview });
+      return;
+    }
+    anomaly.log("dispatcher_announce_start", { preview });
+    void tg.sendMessage(config.defaultChatId, text).then(
+      () => {
+        anomaly.log("dispatcher_announce_ok", { preview });
+      },
+      (err) => {
+        anomaly.log("dispatcher_announce_give_up", {
+          preview,
+          error: String(err),
+        });
+      },
+    );
   }
 
   // Per-session count of replies sent while that session was inactive.
@@ -369,10 +399,12 @@ async function main(): Promise<void> {
           if (ready?.kind === "spawned") {
             // Auto-switch to newly spawned session — user's /new implies intent to use it.
             registry.setActive(ready.id);
-            announce(`✅ [${ready.label}] 준비됨 — 자동 전환됨`);
+            const s = registry.get(ready.id);
+            const readyLabel = s?.source ? "이어하기 준비됨" : "준비됨";
+            announce(`✅ [${ready.id}][${ready.label}] ${readyLabel} — 자동 전환됨`);
             onActiveChanged(beforeActiveId);
           } else if (ready?.kind === "reconnected") {
-            announce(`🔄 [${ready.label}] 재연결됨`);
+            announce(`🔄 [${ready.id}][${ready.label}] 재연결됨`);
             pushSessionState(msg.session_id);
           } else {
             pushSessionState(msg.session_id);
@@ -411,6 +443,23 @@ async function main(): Promise<void> {
           onReplySent();
           break;
         }
+        case "spawn_request": {
+          anomaly.log("ipc_spawn_request", {
+            where: "dispatcher.ipc",
+            cwd: msg.cwd,
+            resumeId: msg.resumeId,
+          });
+          try {
+            const spawnOpts: core.SpawnOptions = { cwd: msg.cwd };
+            if (msg.resumeId) spawnOpts.resumeId = msg.resumeId;
+            if (msg.skipPermissions) spawnOpts.skipPermissions = msg.skipPermissions;
+            const r = sessions.spawn(spawnOpts);
+            announce(`🔀 handoff: spawning [${r.id}][${r.label}]${msg.resumeId ? " (resume)" : ""}...`);
+          } catch (err) {
+            announce(`✗ handoff failed: ${String(err)}`);
+          }
+          break;
+        }
         default:
           anomaly.log("mcp_unknown_method", {
             where: "dispatcher.ipc",
@@ -427,7 +476,7 @@ async function main(): Promise<void> {
         void unpinRepliesOf(session.id);
         if (session.state !== "dead") {
           announce(
-            `⚠️ [${session.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
+            `⚠️ [${session.id}][${session.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
             `재연결 실패 시 /new 또는 /resume 으로 새 세션을 시작하세요.`,
           );
         }
@@ -489,20 +538,38 @@ async function main(): Promise<void> {
     }
     tick.stop();
     void poller.stop();
+    // On shutdown we try to unpin, but only drop registry entries if the unpin
+    // actually succeeded (or the pin is already gone). If it fails — e.g.
+    // network hang — we MUST keep the ID so the next startup can retry,
+    // otherwise orphan pins linger in Telegram forever.
+    const wasGoalMet = async (msgId: number, chatId: string): Promise<boolean> => {
+      try {
+        await tg.unpinMessage(chatId, msgId);
+        return true;
+      } catch (err) {
+        const m = String(err).toLowerCase();
+        return m.includes("message to unpin not found") || m.includes("message not found");
+      }
+    };
+
     const stalePin = registry.getActivePin();
-    if (stalePin) {
-      await tg.unpinMessage(stalePin.chatId, stalePin.messageId).catch(() => {});
+    if (stalePin && await wasGoalMet(stalePin.messageId, stalePin.chatId)) {
       registry.setActivePin(undefined);
     }
     if (config.defaultChatId) {
-      for (const ids of pinnedReplyIds.values()) {
+      const chat = config.defaultChatId;
+      const remaining = new Map<string, number[]>();
+      for (const [sid, ids] of pinnedReplyIds) {
+        const stillPinned: number[] = [];
         for (const mid of ids) {
-          await tg.unpinMessage(config.defaultChatId, mid).catch(() => {});
+          if (!(await wasGoalMet(mid, chat))) stillPinned.push(mid);
         }
+        if (stillPinned.length > 0) remaining.set(sid, stillPinned);
       }
+      pinnedReplyIds.clear();
+      for (const [sid, ids] of remaining) pinnedReplyIds.set(sid, ids);
+      registry.setPinnedReplies(Object.fromEntries(remaining));
     }
-    pinnedReplyIds.clear();
-    registry.clearPinnedReplies();
     const kills = registry.list().map((s) => sessions.gracefulKill(s.tmuxName));
     await Promise.all(kills);
     for (const ls of sockets.values()) ls.close();

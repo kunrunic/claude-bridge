@@ -56,6 +56,16 @@ export type IpcSessionState = {
   label: string;
 };
 
+// handoff — 로컬 claude 세션을 bridge tmux 로 이관. dispatcher 가 받아서
+// sessions.spawn({ cwd, resumeId }) 를 실행한다. 인증은 유닉스 소켓 권한에 의존
+// (같은 사용자 프로세스만 접근 가능).
+export type IpcSpawnRequest = {
+  op: "spawn_request";
+  cwd: string;
+  resumeId?: string;
+  skipPermissions?: boolean;
+};
+
 export type IpcMessage =
   | IpcHello
   | IpcInbound
@@ -64,7 +74,8 @@ export type IpcMessage =
   | IpcSignal
   | IpcShutdown
   | IpcReplySent
-  | IpcSessionState;
+  | IpcSessionState
+  | IpcSpawnRequest;
 
 export class LineSocket {
   private buf = "";

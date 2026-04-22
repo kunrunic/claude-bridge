@@ -15,6 +15,10 @@ export type Session = {
   lastReplyTs?: number;
   pendingPermissions: Set<string>;
   socketId?: string;
+  // Human-readable origin, set when the session came from /resume or /fork.
+  // Shown in the "자동 전환됨" announce so the user can tell which past
+  // session was revived. Format: "<project> · <title-first-40-chars>".
+  source?: string;
 };
 
 type PersistedSession = Omit<Session, "pendingPermissions" | "socketId"> & {
@@ -136,7 +140,8 @@ export class Registry {
     const persistWorthy =
       (patch.state !== undefined && patch.state !== s.state) ||
       (patch.label !== undefined && patch.label !== s.label) ||
-      patch.tmuxName !== undefined;
+      patch.tmuxName !== undefined ||
+      patch.source !== undefined;
     Object.assign(s, patch);
     if (persistWorthy) this.persist();
   }

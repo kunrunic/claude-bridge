@@ -51,7 +51,12 @@ export type AnomalyKind =
   | "ipc_connect_start"
   | "ipc_connect_ok"
   | "ipc_connect_failed"
-  | "ipc_hello_received";
+  | "ipc_hello_received"
+  | "ipc_spawn_request"
+  | "dispatcher_announce_start"
+  | "dispatcher_announce_ok"
+  | "dispatcher_announce_skip"
+  | "dispatcher_announce_give_up";
 
 export function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void {
   try {
