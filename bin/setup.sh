@@ -21,8 +21,24 @@ printf '========================================\n\n'
 
 # 1. bun
 if ! command -v bun >/dev/null 2>&1; then
-  echo "✗ bun not found. install from https://bun.sh then re-run." >&2
-  exit 1
+  echo "✗ bun not found."
+  read -r -p "  지금 설치할까요? [y/N] " yn
+  case "${yn:-N}" in
+    [Yy]*)
+      echo "installing bun..."
+      curl -fsSL https://bun.sh/install | bash
+      export PATH="$HOME/.bun/bin:$PATH"
+      if ! command -v bun >/dev/null 2>&1; then
+        echo "✗ 설치 후에도 bun을 찾을 수 없습니다. 새 터미널을 열고 다시 실행하세요." >&2
+        exit 1
+      fi
+      echo "✓ bun 설치 완료"
+      ;;
+    *)
+      echo "  수동 설치: curl -fsSL https://bun.sh/install | bash" >&2
+      exit 1
+      ;;
+  esac
 fi
 echo "✓ bun $(bun --version)"
 
