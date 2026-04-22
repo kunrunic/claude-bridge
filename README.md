@@ -76,7 +76,7 @@ dispatcher 가 여러 Claude Code 세션을 허브처럼 관리한다. 각 세�
 tmux, 자신의 MCP 서버, 자신의 작업 디렉토리를 가지고 **독립적으로**
 돌아간다. Telegram 챗창 하나에서 모든 세션의 라이프사이클을 컨트롤한다.
 
-- `/new [label] [cwd]` — 새 세션 spawn. 라벨과 작업 디렉토리 지정 가능
+- `/new [cwd]` — 새 세션 spawn. 작업 디렉토리 지정 가능 (라벨은 cwd 폴더명으로 자동 설정)
 - `/resume` — `~/.claude/projects` 의 **모든 과거 Claude Code 세션** 복원.
   컨텍스트, 파일 히스토리, cwd 가 그대로 살아남. 어제 노트북에서 하던 작업을
   오늘 폰에서 이어간다
@@ -256,10 +256,16 @@ cwd 에서 spawn 해도 동작한다.
 | 커맨드 | 동작 |
 |---|---|
 | `/sessions` | 활성 세션 목록 + 탭해서 **전환** |
-| `/new [label] [cwd]` | 새 Claude 세션 spawn |
+| `/new [cwd]` | 새 Claude 세션 spawn (라벨 = cwd 폴더명 자동) |
 | `/resume` | 과거 Claude Code 세션 복원 (picker) |
 | `/fork` | 기존 세션 컨텍스트 상속한 분기 세션 (picker) |
 | `/kill` | 세션 종료 (picker) |
+
+### Claude Code 내부에서 사용하는 커맨드
+
+| 커맨드 | 동작 |
+|---|---|
+| `/handoff-to-bridge` | 현재 로컬 Claude 세션을 bridge(tmux)로 이관. 실행 후 `/exit` 로 로컬 종료 |
 
 ## 문제 해결 도구
 
