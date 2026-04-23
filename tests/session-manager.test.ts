@@ -230,8 +230,8 @@ describe("SessionManager", () => {
 
       // Should return a string (formatted list from sessions.formatSessionList)
       expect(typeof result).toBe("string");
-      // If no sessions found on disk, should say "no recent sessions found"
-      expect(result).toMatch(/no recent sessions found|Recent Claude sessions/);
+      // Empty list → Korean no-session message; non-empty → "Recent Claude sessions"
+      expect(result).toMatch(/복원할 이전 세션이 없습니다|Recent Claude sessions/);
     });
   });
 
