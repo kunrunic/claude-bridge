@@ -441,6 +441,9 @@ async function main(): Promise<void> {
         case "reply_sent": {
           const session = registry.getBySocketId(socketId);
           const active = registry.active();
+          if (session) {
+            registry.updateState(session.id, { replySentAt: Date.now() });
+          }
           if (session && active?.id !== session.id) {
             if (msg.message_ids && msg.message_ids.length > 0) {
               void pinInactiveReplies(session.id, msg.message_ids);

@@ -36,12 +36,13 @@ function isMeaningful(text: string): boolean {
   return true;
 }
 
-type ParsedSession = { first: string; last: string; lastTs: number };
+type ParsedSession = { first: string; last: string; lastTs: number; cwd?: string };
 
 function parseSessionJsonl(path: string): ParsedSession {
   let first = "";
   let last = "";
   let lastTs = 0;
+  let cwd: string | undefined;
   try {
     const raw = readFileSync(path, "utf-8");
     for (const line of raw.split("\n")) {
@@ -51,11 +52,13 @@ function parseSessionJsonl(path: string): ParsedSession {
           type?: string;
           timestamp?: string;
           message?: { content?: unknown };
+          cwd?: string;
         };
         if (d.timestamp) {
           const ts = Date.parse(d.timestamp);
           if (!Number.isNaN(ts) && ts > lastTs) lastTs = ts;
         }
+        if (!cwd && d.cwd) cwd = d.cwd;
         if (d.type !== "user") continue;
         const text = extractText(d.message?.content ?? "");
         if (!isMeaningful(text)) continue;
@@ -65,7 +68,9 @@ function parseSessionJsonl(path: string): ParsedSession {
       } catch {}
     }
   } catch {}
-  return { first, last, lastTs };
+  const result: ParsedSession = { first, last, lastTs };
+  if (cwd) result.cwd = cwd;
+  return result;
 }
 
 function formatMtime(ms: number): string {
@@ -109,8 +114,17 @@ export function findSessions(limit = 8): SessionInfo[] {
       const parsed = parseSessionJsonl(path);
       if (!parsed.first) continue;
       const activityMs = parsed.lastTs > 0 ? parsed.lastTs : mtime;
-      const projSlug = proj.replace(/^-+/, "");
-      const projShort = projSlug.split("-").pop() ?? "";
+      // Prefer cwd basename from the JSONL itself — Claude Code's project dir
+      // names replace both `/` and `_` with `-`, so parsing `ai_env` back from
+      // `-Users-...-ai-env` would lossily yield `env`. The cwd field preserves
+      // the original folder name.
+      let projShort: string;
+      if (parsed.cwd) {
+        projShort = basename(parsed.cwd);
+      } else {
+        const projSlug = proj.replace(/^-+/, "");
+        projShort = projSlug.split("-").pop() ?? "";
+      }
       results.push({
         id,
         project: projShort,

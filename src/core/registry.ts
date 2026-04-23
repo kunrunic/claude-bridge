@@ -19,6 +19,12 @@ export type Session = {
   // Shown in the "자동 전환됨" announce so the user can tell which past
   // session was revived. Format: "<project> · <title-first-40-chars>".
   source?: string;
+  // Reply-miss detection timestamps. Non-persistent — reset every restart.
+  inboundAt?: number;         // dispatcher가 사용자 메시지를 이 세션에 전달한 시각
+  replySentAt?: number;       // mcp reply 도구가 호출된 시각 (reply_sent IPC 수신)
+  idleSinceTs?: number;       // idle 상태 전환 시각
+  remindSentAt?: number;      // 1단계 tmux 재전송 요청 발신 시각
+  userNoticeSentAt?: number;  // 2단계 Telegram 알림 발신 시각
 };
 
 type PersistedSession = Omit<Session, "pendingPermissions" | "socketId"> & {

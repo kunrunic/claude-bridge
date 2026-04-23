@@ -141,6 +141,7 @@ export function handleInbound(
     content: evt.content,
     meta: evt.meta as Record<string, string>,
   });
+  registry.updateState(active.id, { inboundAt: Date.now() });
   return true;
 }
 

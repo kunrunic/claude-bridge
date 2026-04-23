@@ -13,7 +13,10 @@ import {
 import * as anomaly from "./anomaly.ts";
 
 const DIALOG_POLL_MS = 200;
-const DIALOG_TIMEOUT_MS = 15_000;
+// Resume/fork of a large session (e.g. 170k tokens, 6h old) can take tens of
+// seconds before the "Resume from summary" dialog appears. Keep polling long
+// enough to catch it. Polling is cheap (tmux capturePane at 200ms interval).
+const DIALOG_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_MS = 60_000;
 const TRUST_DIALOG_MARKER = "I trust this folder";
 const DEV_CHANNEL_WARNING_MARKER = "Loading development channels";
@@ -261,7 +264,10 @@ export class SessionManager {
           });
         }
       }
-      if (dismissed.devWarn) return;
+      // Don't early-terminate on devWarn dismissal — for resume/fork flows
+      // the "Resume from summary" dialog appears AFTER the devWarn, often
+      // many seconds later while Claude Code loads the session context.
+      // Keep polling until deadline.
       setTimeout(poll, DIALOG_POLL_MS);
     };
     setTimeout(poll, DIALOG_POLL_MS);

@@ -56,7 +56,10 @@ export type AnomalyKind =
   | "dispatcher_announce_start"
   | "dispatcher_announce_ok"
   | "dispatcher_announce_skip"
-  | "dispatcher_announce_give_up";
+  | "dispatcher_announce_give_up"
+  | "reply_missing_remind"
+  | "reply_missing_remind_failed"
+  | "reply_missing_user_notice";
 
 export function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void {
   try {
