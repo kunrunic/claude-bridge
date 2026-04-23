@@ -22,6 +22,9 @@ const THEME_DIALOG_MARKER = "Choose the text style";
 // dismiss — user must log in manually on their own machine. Fail fast here
 // instead of waiting for the 60s hello timeout.
 const LOGIN_DIALOG_MARKER = "Select login method";
+// Appears when resuming a session with large token count — option 1 is already
+// selected by default, so sending Enter confirms "Resume from summary".
+const RESUME_SUMMARY_MARKER = "Resume from summary (recommended)";
 const GRACEFUL_EXIT_WAIT_MS = 5_000;
 const GRACEFUL_EXIT_POLL_MS = 200;
 
@@ -179,7 +182,7 @@ export class SessionManager {
 
   private confirmStartupDialogs(tmuxName: string, sessionId: string): void {
     const deadline = Date.now() + DIALOG_TIMEOUT_MS;
-    const dismissed = { theme: false, trust: false, devWarn: false };
+    const dismissed = { theme: false, trust: false, devWarn: false, resumeSummary: false };
     const poll = (): void => {
       if (Date.now() > deadline) return;
       let pane = "";
@@ -209,6 +212,18 @@ export class SessionManager {
         }
         this.deps.registry.remove(sessionId);
         return;
+      }
+      if (!dismissed.resumeSummary && pane.includes(RESUME_SUMMARY_MARKER)) {
+        try {
+          this.deps.tmux.sendKeys(tmuxName, "", true);
+          dismissed.resumeSummary = true;
+        } catch (err) {
+          anomaly.log("session_spawn_failed", {
+            op: "resume-summary-dialog-confirm",
+            session: sessionId,
+            error: String(err),
+          });
+        }
       }
       if (!dismissed.theme && pane.includes(THEME_DIALOG_MARKER)) {
         try {

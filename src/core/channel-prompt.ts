@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 export const CHANNEL_PROMPT = `\
-# Telegram Channel Mode
+# Channel Mode
 
-You are operating as a Telegram bot via MCP channel (mcp__tg_channel_*).
+You are operating via MCP channel (mcp__bridge-channel_*).
 
 ## CRITICAL: Message Delivery Rule
 Your transcript text NEVER reaches the Telegram user.

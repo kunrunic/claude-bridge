@@ -78,7 +78,7 @@ Claude Code에서 도구(예: `reply`) 호출 시 권한 필요. MCP permission 
 
 **Compact 형식** (permissions.ts 에 정의)
 ```
-🔐 Permission: mcp__tg_channel__reply
+🔐 Permission: mcp__bridge-channel__reply
 [See more] [✅ Allow] [❌ Deny]
 ```
 
@@ -86,9 +86,9 @@ Claude Code에서 도구(예: `reply`) 호출 시 권한 필요. MCP permission 
 
 **Expanded 형식** (permissions.ts 에 정의)
 ```
-🔐 Permission: mcp__tg_channel__reply
+🔐 Permission: mcp__bridge-channel__reply
 
-tool_name: mcp__tg_channel__reply
+tool_name: mcp__bridge-channel__reply
 description: Send a message to Telegram
 input_preview:
 {

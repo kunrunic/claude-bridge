@@ -39,7 +39,7 @@ import { SessionManager } from "./core/SessionManager.ts";
 import { TickObserver } from "./core/TickObserver.ts";
 import { SlashHandler } from "./channels/telegram/SlashHandler.ts";
 
-const CHANNEL_NAME = "tg_channel";
+const CHANNEL_NAME = "bridge-channel";
 const TMUX_SESSION_PREFIX = CB_INSTANCE ? `cb-${CB_INSTANCE}-` : "cb-";
 const BLOCKED_TOOLS = [
   "mcp__plugin_telegram_telegram__reply",
@@ -48,30 +48,20 @@ const BLOCKED_TOOLS = [
   "mcp__plugin_telegram_telegram__download_attachment",
 ];
 const ALLOWED_TOOLS = [
-  "mcp__tg_channel__reply",
-  "mcp__tg_channel__react",
-  "mcp__tg_channel__edit_message",
-  "mcp__tg_channel__download_attachment",
+  "mcp__bridge-channel__reply",
+  "mcp__bridge-channel__react",
+  "mcp__bridge-channel__edit_message",
+  "mcp__bridge-channel__download_attachment",
 ];
 
 function reconcileOrphans(registry: Registry): void {
-  for (const s of registry.list()) {
-    if (!tmux.hasSession(s.tmuxName)) {
-      anomaly.log("orphan_detected", {
-        where: "startup",
-        kind: "stale_registry_entry",
-        sessionId: s.id,
-        tmuxName: s.tmuxName,
-      });
-      registry.remove(s.id);
-    }
-  }
-  const known = new Set(registry.list().map((s) => s.tmuxName));
+  // Kill ALL bridge-owned tmux sessions unconditionally on startup.
+  // Design: sessions do not survive bridge restarts — clean slate every time.
+  // This handles the case where a previous bridge was SIGKILL'd before
+  // gracefulKill could finish, leaving tmux sessions alive.
   for (const name of tmux.listSessions(TMUX_SESSION_PREFIX)) {
-    if (known.has(name)) continue;
     anomaly.log("orphan_detected", {
       where: "startup",
-      kind: "unknown_tmux",
       tmuxName: name,
     });
     try {
@@ -80,10 +70,6 @@ function reconcileOrphans(registry: Registry): void {
       // best-effort; if kill fails the next startup will see it again
     }
   }
-  // after reconciliation, every live session's MCP pipe is freshly opened
-  // once Claude reconnects. in practice we killed orphans above, so none
-  // should remain attached — but we clear the registry defensively to
-  // surface them via the new-session flow.
   for (const s of [...registry.list()]) {
     registry.remove(s.id);
   }

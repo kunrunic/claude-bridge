@@ -151,6 +151,20 @@ log: /Users/user/.claude-bridge/anomaly.jsonl
 - `stale_instance_evicted` — 중복 인스턴스 강제 종료
 - `orphan_detected` — 부모 프로세스 사라짐
 
+## Context Limit Auto-Compact (2026-04-21)
+
+**감지** (TickObserver.ts:85-102)
+- `observe()` 함수가 pane에서 `context_limit` signal 감지
+- TickObserver가 `/compact` 명령어 자동 전송
+- 사용자에게 알림: `⚠️ context limit: [id][label] — /compact 자동 실행`
+- anomaly log: `anomaly_self_error` (event: "auto_compact")
+
+**Compact Error 알림** (TickObserver.ts:103-112)
+- `observe()` 함수가 pane에서 `compact_error` signal 감지 (압축 실패)
+- TickObserver가 사용자에게 알림: `❌ compact 실패: [id][label] — /model 로 모델 전환 후 재시도하세요`
+- anomaly log: `compact_error`
+- 한 번만 알림 (세션 idle 상태로 돌아갈 때까지)
+
 ## 신규 컴포넌트 문서화 (2026-04-21)
 
 최근 리팩토링으로 핵심 기능이 분리됨:

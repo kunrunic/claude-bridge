@@ -18,6 +18,8 @@ export type TickObserverDeps = {
 export class TickObserver {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly rateLimitNotified = new Set<string>();
+  private readonly autoCompacting = new Set<string>();
+  private readonly compactErrorNotified = new Set<string>();
 
   constructor(private readonly deps: TickObserverDeps) {}
 
@@ -73,11 +75,40 @@ export class TickObserver {
       } else if (obs.signal === "busy" || obs.signal === "compact") {
         patch.state = "busy";
         if (!s.busySince) patch.busySince = Date.now();
+        this.autoCompacting.delete(s.id);
+        this.compactErrorNotified.delete(s.id);
       } else if (obs.signal === "idle") {
         patch.state = "idle";
         this.rateLimitNotified.delete(s.id);
-      } else if (obs.signal === "compact_error" || obs.signal === "context_limit") {
+        this.autoCompacting.delete(s.id);
+        this.compactErrorNotified.delete(s.id);
+      } else if (obs.signal === "context_limit") {
         patch.state = "error";
+        if (!this.autoCompacting.has(s.id)) {
+          this.autoCompacting.add(s.id);
+          this.deps.announce(
+            `⚠️ context limit: [${s.id}][${s.label}] — /compact 자동 실행`,
+          );
+          anomaly.log("anomaly_self_error", {
+            where: "TickObserver.tick",
+            event: "auto_compact",
+            sessionId: s.id,
+          });
+          try {
+            this.deps.tmux.sendKeys(s.tmuxName, "/compact", true);
+          } catch {
+            /* ignore */
+          }
+        }
+      } else if (obs.signal === "compact_error") {
+        patch.state = "error";
+        if (!this.compactErrorNotified.has(s.id)) {
+          this.compactErrorNotified.add(s.id);
+          this.deps.announce(
+            `❌ compact 실패: [${s.id}][${s.label}] — /model 로 모델 전환 후 재시도하세요`,
+          );
+          anomaly.log("compact_error", { sessionId: s.id, label: s.label });
+        }
       }
       this.deps.registry.updateState(s.id, patch);
     }

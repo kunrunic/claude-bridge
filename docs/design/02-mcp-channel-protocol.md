@@ -123,7 +123,7 @@ server → dispatcher, Claude가 도구 권한 요청할 때.
   "op": "permission_request",
   "session_id": "s1",
   "request_id": "abc12",
-  "tool_name": "mcp__tg_channel__reply",
+  "tool_name": "mcp__bridge-channel__reply",
   "description": "...",
   "input_preview": "{...}"
 }
@@ -175,13 +175,13 @@ mcp__plugin_telegram_telegram__download_attachment
 
 **허용 도구** (dispatcher.ts:50-55)
 ```
-mcp__tg_channel__reply
-mcp__tg_channel__react
-mcp__tg_channel__edit_message
-mcp__tg_channel__download_attachment
+mcp__bridge-channel__reply
+mcp__bridge-channel__react
+mcp__bridge-channel__edit_message
+mcp__bridge-channel__download_attachment
 ```
 
-(새 tg_channel namespace만 허용)
+(bridge-channel namespace만 허용)
 
 Claude Code는 `--disallowedTools` + `--allowedTools` 플래그로 실행 (dispatcher-core.ts:59-60)
 

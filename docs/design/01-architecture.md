@@ -84,7 +84,7 @@ MCP stdio 채널 기반, 멀티 세션을 지원하는 Telegram ↔ Claude Code 
 ## 외부 의존
 
 - **tmux** (src/core/tmux/session.ts) — new-session, kill-session, send-keys, capture-pane 래퍼
-- **Claude Code CLI** — `claude --disallowedTools ... --allowedTools ... --append-system-prompt-file <channel-prompt> --mcp-config <mcp.json> --dangerously-load-development-channels server:tg_channel` 명령어로 실행 (dispatcher-core.ts:66-72)
+- **Claude Code CLI** — `claude --disallowedTools ... --allowedTools ... --append-system-prompt-file <channel-prompt> --mcp-config <mcp.json> --dangerously-load-development-channels server:bridge-channel` 명령어로 실행 (dispatcher-core.ts:47-95)
 - **파일 시스템**
   - `~/.claude/projects/*.jsonl` — Claude Code 세션 파일 (복원 용)
   - `~/.claude-bridge/workspaces/` — 브리지 세션 cwd 격리 디렉토리
@@ -114,16 +114,22 @@ MCP stdio 채널 기반, 멀티 세션을 지원하는 Telegram ↔ Claude Code 
 
 파일 권한은 자동 강화: 디렉토리 0700, 파일 0600
 
-## 신규 기능 (2026-04-21)
+## 신규 기능 (2026-04-23)
 
 ### IPC 애니메이션 상태머신
 dispatcher는 inbound 메시지가 활성 세션으로 전달될 때 emoji 애니메이션을 Telegram 채팅창에 표시. BUSY_FRAMES (🤔, 💭, 🧐, 🤓, 💡, 🤯) 을 5초 간격으로 순환하다가 reply 완료 시 ✅ 로 마무리 후 5초 후 삭제 (dispatcher.ts:149-189).
 
 ### --mcp-config 경로 주입
-spawnSession이 claude 명령 시 `--mcp-config <path>` 플래그로 mcp.json 위치를 전달. channel-prompt.ts가 runtime에 mcp.json 생성하고 server.ts 절대경로 계산 (dispatcher-core.ts:71).
+spawnSession이 claude 명령 시 `--mcp-config <path>` 플래그로 mcp.json 위치를 전달. channel-prompt.ts가 runtime에 mcp.json 생성하고 server.ts 절대경로 계산 (dispatcher-core.ts:79).
 
 ### --append-system-prompt-file 채널 프롬프트
-dispatcher가 channel-prompt.ts로 생성한 채널 지시 프롬프트를 `--append-system-prompt-file` 플래그로 전달. Claude Code에 "Telegram을 통한 상호작용"을 명시함 (dispatcher-core.ts:70).
+dispatcher가 channel-prompt.ts로 생성한 채널 지시 프롬프트를 `--append-system-prompt-file` 플래그로 전달. Claude Code에 "Telegram을 통한 상호작용"을 명시함 (dispatcher-core.ts:78).
+
+### Resume picker 자동 Enter
+Resume 시 토큰이 많은 세션에서 "Resume from summary (recommended)" 대화가 표시될 때, SessionManager가 자동으로 Enter 키를 전송하여 즉시 재개 (SessionManager.ts:216-227).
+
+### Context Limit Auto-Compact
+context_limit 신호를 감지하면 TickObserver가 자동으로 `/compact` 명령어를 전송. 사용자에게 알림 표시. 압축 실패 시 별도 error 신호로 감지하여 compact_error 알림 (TickObserver.ts:85-112).
 
 ## Known Fragility
 

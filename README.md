@@ -3,7 +3,7 @@
 **Telegram 에서 내 PC 의 Claude Code 를 원격 조작**한다.
 외출 중에도, 자기 전 침대에서도 — 진행 중인 개발 세션을 이어간다.
 
-PC 가 켜져 있고 봇이 폴링 중이면 어디서든 동작. Bun + TypeScript.
+PC 가 켜져 있고 봇이 폴링 중이면 어디서든 동작. Bun + TypeScript. 멀티 세션, 자동 컴팩트, 자동 정리.
 
 ---
 
@@ -30,7 +30,7 @@ bun install
 
 Telegram Bot Token ([@BotFather](https://t.me/botfather)) 과 본인
 Telegram user_id (@userinfobot 으로 확인) 만 있으면 준비 완료. `setup.sh`
-가 `tg_channel` MCP 서버를 user scope 로 등록하므로 어떤 디렉토리에서 세션을
+가 `bridge-channel` MCP 서버를 user scope 로 등록하므로 어떤 디렉토리에서 세션을
 spawn 해도 바로 동작한다.
 
 이후 봇에 `/new` 를 보내 새 세션을 만들거나, `/resume` 으로 과거 세션을
@@ -109,16 +109,24 @@ IPC 기반 상태 머신으로 구동하므로 터미널 파싱 누락 없이 �
   업데이트하도록 **프롬프트로 유도** (완전 강제는 아니며 Claude 판단에
   따라 실제 호출 빈도가 다를 수 있음)
 
+### 자동 최적화
+
+토큰 사용량이 많은 세션을 resume 할 때 —
+- **Resume picker 자동 Enter**: "Resume from summary (recommended)" 옵션이 자동으로
+  선택되어 사용자 개입 없이 바로 재개 가능
+- **Context limit 자동 compact**: 세션이 컨텍스트 한계에 도달하면 자동으로
+  `/compact` 실행. Compact 실패 시 Telegram 알림으로 모델 전환 제안
+
 ### 안정적인 메시지 교환 — MCP 채널 프로토콜
 
 Claude 가 네 가지 MCP 도구를 직접 호출해 Telegram 과 대화한다:
 
 | 도구 | 용도 |
 |---|---|
-| `reply` | 메시지 전송 (푸시 알림 발생) |
-| `react` | 이모지 반응 |
-| `edit_message` | 기존 메시지 무음 수정 (진행상황 업데이트) |
-| `download_attachment` | 첨부 파일 다운로드 |
+| `mcp__bridge-channel__reply` | 메시지 전송 (푸시 알림 발생) |
+| `mcp__bridge-channel__react` | 이모지 반응 |
+| `mcp__bridge-channel__edit_message` | 기존 메시지 무음 수정 (진행상황 업데이트) |
+| `mcp__bridge-channel__download_attachment` | 첨부 파일 다운로드 |
 
 이 방식은 [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
 의 Telegram 플러그인과 **동일한 MCP 채널 프로토콜**을 따른다. Claude 가
@@ -138,17 +146,19 @@ Telegram 에서 보낸 이미지·파일은 로컬에 저장되고, Claude 가 �
 받아 `Read` 또는 이미지 도구로 분석한다. 스샷 첨부해서 "이 UI 버그
 고쳐줘" 같은 지시가 바로 된다.
 
-### 재기동 안전
+### 재기동 및 복구
 
-dispatcher 재기동 시 기존 세션은 **정상 종료** — 각 Claude 에 `/exit`
-를 보내 `~/.claude/projects` 세션 JSONL 을 저장하고, 그 뒤 tmux 를
-정리한다. 재기동 후 `/resume` 으로 이어가면 된다. 비정상 종료
-(SIGKILL, 전원 차단 등) 로 남은 orphan tmux 는 다음 startup 시
-자동으로 청소된다.
+**Graceful shutdown**: dispatcher 재기동 시 각 Claude 에 `/exit` 를 보내
+`~/.claude/projects` 세션 JSONL 을 저장하고, 그 뒤 tmux 를 정리한다.
+재기동 후 `/resume` 으로 이어가면 된다.
 
-IPC 연결이 끊겨도 **자동 재연결 (2s → 5s → 10s 백오프, 최대 3회)** 을
-시도하고, 복구되면 🔄 알림이 Telegram 에 뜬다. 3회 모두 실패 시 해당
-세션은 수동 `/new` 또는 `/resume` 으로 복구.
+**자동 orphan 정리**: dispatcher 시작 시 비정상 종료(SIGKILL, 전원 차단 등)
+로 남은 cb-* tmux 세션을 모두 자동으로 청소한다. 별도의 `--all` 옵션
+없이도 깨끗한 상태에서 재시작.
+
+**자동 IPC 재연결**: IPC 연결이 끊겨도 **자동 재연결 (2s → 5s → 10s 백오프,
+최대 3회)** 을 시도하고, 복구되면 🔄 알림이 Telegram 에 뜬다. 3회 모두
+실패 시 해당 세션은 수동 `/new` 또는 `/resume` 으로 복구.
 
 ### 여러 인스턴스 동시 운영
 
@@ -235,7 +245,7 @@ tests/                           # Bun test suite (177 cases)
 }
 ```
 
-디렉토리 권한은 자동으로 `0700` / `0600` 으로 강화된다. `tg_channel`
+디렉토리 권한은 자동으로 `0700` / `0600` 으로 강화된다. `bridge-channel`
 MCP 서버는 `claude mcp add -s user` 로 user scope 에 등록되므로 어떤
 cwd 에서 spawn 해도 동작한다.
 
@@ -245,9 +255,11 @@ cwd 에서 spawn 해도 동작한다.
 ./bin/start.sh                # 백그라운드 기동
 ./bin/start.sh --fg           # 전경 (Ctrl+C 로 종료)
 ./bin/stop.sh                 # dispatcher 종료 (graceful /exit → 5s → kill)
-./bin/stop.sh --all           # dispatcher + 모든 cb-* tmux 정리
 ./bin/restart.sh              # stop → start
 ```
+
+참고: dispatcher 기동 시 이전 세션이 남아있다면 자동으로 정리된다. 별도의
+`--all` 옵션은 불필요.
 
 기동 시 Telegram 봇 메뉴 (`/`) 가 자동 등록된다.
 

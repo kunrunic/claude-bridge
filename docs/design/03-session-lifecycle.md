@@ -48,7 +48,7 @@
        -e CB_SESSION_ID=s1 \
        -e CB_POLL_DISABLED=1 \
        claude --disallowedTools ... --allowedTools ... \
-       --channels server:tg_channel
+       --channels server:bridge-channel
      ```
    - 환경변수: CB_DISPATCHER_SOCKET, CB_SESSION_ID, CB_POLL_DISABLED
    - 플래그: --disallowedTools, --allowedTools (도구 화이트리스트), --channels (MCP 채널 등록)
@@ -107,6 +107,9 @@
 
 ### 폴더 신뢰 및 권한 자동 승인
 resume 시에도 "Trust this folder?" 프롬프트 가능. dispatcher가 자동 확인함
+
+### Resume picker 자동 Enter
+resume 시 토큰이 많은 세션에서 "Resume from summary (recommended)" 대화 표시. SessionManager가 자동으로 Enter 키 전송 (SessionManager.ts:216-227)
 
 ## Fork (새 세션 ID로 resume)
 
@@ -249,13 +252,15 @@ anomaly log: "shutdown" with reason
 
 ## Startup Orphan Reconciliation
 
-**reconcileOrphans(registry)** (dispatcher.ts:57-90)
+**reconcileOrphans(registry)** (dispatcher.ts:57-76)
 
-dispatcher 는 매 startup 시 tmux 를 신뢰원으로 삼아 registry 와 대조:
+dispatcher 는 매 startup 시 모든 `cb-*` 로 시작하는 tmux 세션을 무조건 kill:
 
-1. **stale_registry_entry** — registry 에 있는데 `tmux has-session` 실패 → `registry.remove()` (anomaly: orphan_detected, kind: stale_registry_entry)
-2. **unknown_tmux** — `tmux list-sessions` 가 반환한 `cb-*` 중 registry 에 없는 것 → `tmux kill-session` (anomaly: orphan_detected, kind: unknown_tmux). MCP stdio 가 이미 끊긴 상태라 재연결 불가, 정리가 정답.
-3. 정리 후 registry 를 완전히 비움 — 사용자는 `/new` 또는 `/resume` 으로 새로 시작.
+1. **tmux.listSessions()** — TMUX_SESSION_PREFIX (`cb-`) 로 시작하는 모든 세션 목록 조회
+2. 각 세션에 대해 `tmux kill-session` 실행. anomaly log: `orphan_detected`
+3. registry 를 완전히 비움 — 사용자는 `/new` 또는 `/resume` 으로 새로 시작.
+
+**설계**: dispatcher 재기동 시 이전 tmux 세션은 살아남아서는 안 됨. SIGKILL로 비정상 종료된 경우에도 이전 세션이 남아있을 수 있으므로, 시작 시 모두 정리하고 깨끗한 상태에서 시작.
 
 `~/.claude/projects/` 의 JSONL 은 tmux 생명주기와 독립이므로 `/resume` 으로
 이전 대화를 이어갈 수 있다.
