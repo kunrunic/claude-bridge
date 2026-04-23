@@ -41,10 +41,10 @@ const DENY = [
   "mcp__plugin_telegram_telegram__download_attachment",
 ].join(",");
 const ALLOW = [
-  "mcp__tg_channel__reply",
-  "mcp__tg_channel__react",
-  "mcp__tg_channel__edit_message",
-  "mcp__tg_channel__download_attachment",
+  "mcp__bridge-channel__reply",
+  "mcp__bridge-channel__react",
+  "mcp__bridge-channel__edit_message",
+  "mcp__bridge-channel__download_attachment",
 ].join(",");
 
 const botWorkspaceDir = join(homedir(), ".claude-bridge", "workspaces", "bot");
@@ -52,7 +52,7 @@ mkdirSync(botWorkspaceDir, { recursive: true });
 
 tmux.newSession({
   name: sessionName,
-  command: `${CLAUDE_BIN} --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels server:tg_channel`,
+  command: `${CLAUDE_BIN} --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels server:bridge-channel`,
   cwd: botWorkspaceDir,
   env: {
     CB_DISPATCHER_SOCKET: socketPath,

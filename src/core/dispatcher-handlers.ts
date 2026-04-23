@@ -96,7 +96,7 @@ export function handleIpcPermissionRequest(
     input_preview: msg.input_preview,
   });
   const session = registry.get(msg.session_id);
-  const label = session ? `[${session.label}] ` : "";
+  const label = session ? `[${session.id}][${session.label}] ` : "";
   const keyboard = buildKeyboard(msg.request_id);
   const prompt = `${label}${formatPrompt(msg.tool_name)}`;
   for (const chatId of allowlist) {

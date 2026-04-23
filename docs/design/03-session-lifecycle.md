@@ -271,7 +271,7 @@ dispatcher 는 매 startup 시 모든 `cb-*` 로 시작하는 tmux 세션을 무
 - 현재 활성 세션 (메시지 수신 대상)
 
 **Registry.setActive()** (registry.ts 에 구현)
-- `/switch <id|label>` 또는 새 spawn 시 자동 설정
+- `/sessions` 메뉴에서 탭하거나 새 spawn 시 자동 설정
 
 **세션 제거 시** (registry.ts 에 구현)
 - 활성 세션이 제거되면, 남은 첫 번째 세션으로 전환

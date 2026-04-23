@@ -9,7 +9,7 @@ MCP 채널 기반 Telegram ↔ Claude Code 멀티 세션 브리지. 현재 코�
 | 01 | [architecture.md](01-architecture.md) | 런타임 토폴로지(Telegram ↔ MCP stdio 서버 ↔ dispatcher ↔ tmux ↔ Claude Code)와 계층 분리 |
 | 02 | [mcp-channel-protocol.md](02-mcp-channel-protocol.md) | Claude Code `claude/channel` MCP 프로토콜 (reply, react, edit_message, download_attachment 도구 + inbound/permission 알림) |
 | 03 | [session-lifecycle.md](03-session-lifecycle.md) | 세션 spawn/resume/fork/kill, workspace 격리, PID lock, orphan watchdog |
-| 04 | [slash-commands.md](04-slash-commands.md) | /sessions, /new, /resume, /fork, /switch, /kill, /current, /backlog, /status 명령어 |
+| 04 | [slash-commands.md](04-slash-commands.md) | /sessions, /new, /resume, /fork, /kill, /current, /backlog, /status 명령어 |
 | 05 | [access-and-permissions.md](05-access-and-permissions.md) | allowlist 게이트, 권한 요청 UI, 폴더 신뢰 자동 승인, 설정 권한 강화 |
 | 06 | [observability.md](06-observability.md) | Always-on JSONL anomaly 로거, 구조화 로그, 테스트 레이아웃, CI 파이프라인 |
 

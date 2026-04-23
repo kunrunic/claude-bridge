@@ -22,11 +22,10 @@ function fmtLabel(label: string, maxLen = 10): string {
   return label.length > maxLen ? label.slice(0, maxLen - 1) + "…" : label;
 }
 
-function fmtSessionBtn(s: Session, idx: number, isActive: boolean): string {
-  const mark   = isActive ? "▶" : " ";
-  const idxStr = String(idx).padStart(3, " ");
-  const icon   = stateIcon(s.state, s.signal);
-  return `${mark}${idxStr} ${icon} ${fmtLabel(s.label)}`;
+function fmtSessionBtn(s: Session, isActive: boolean): string {
+  const mark = isActive ? "▶" : " ";
+  const icon = stateIcon(s.state, s.signal);
+  return `${mark} ${s.id} ${icon} ${fmtLabel(s.label)}`;
 }
 
 export type SlashHandlerDeps = {
@@ -60,9 +59,9 @@ export class SlashHandler {
       }
       const active = registry.active();
       const kb = new InlineKeyboard();
-      list.forEach((s, i) => {
+      list.forEach((s) => {
         const isActive = active?.id === s.id;
-        kb.text(fmtSessionBtn(s, i + 1, isActive), `switch:${s.id}`).row();
+        kb.text(fmtSessionBtn(s, isActive), `switch:${s.id}`).row();
       });
       kb.text("✖ cancel", "cancel:").row();
       await tg
@@ -79,9 +78,9 @@ export class SlashHandler {
       }
       const activeId = registry.active()?.id;
       const kb = new InlineKeyboard();
-      list.forEach((s, i) => {
+      list.forEach((s) => {
         const isActive = s.id === activeId;
-        kb.text(`🗑 ${fmtSessionBtn(s, i + 1, isActive)}`, `kill:${s.id}`).row();
+        kb.text(`🗑 ${fmtSessionBtn(s, isActive)}`, `kill:${s.id}`).row();
       });
       kb.text("✖ cancel", "cancel:").row();
       await tg
