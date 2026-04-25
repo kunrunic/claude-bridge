@@ -157,29 +157,18 @@ fi
 # 11. user-scope slash command `/handoff-to-bridge`
 # Installs at ~/.claude/commands/ so the command is available from any cwd
 # (the handoff flow is meant to work from arbitrary project dirs).
-HANDOFF_SCRIPT_ABS="$(cd "$(dirname "$0")/.." && pwd)/bin/handoff-to-bridge.sh"
+# Source of truth for the .md body lives at bin/handoff-to-bridge.md.tpl.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HANDOFF_SCRIPT_ABS="$REPO_ROOT/bin/handoff-to-bridge.sh"
+HANDOFF_TEMPLATE="$REPO_ROOT/bin/handoff-to-bridge.md.tpl"
 USER_COMMANDS_DIR="$HOME/.claude/commands"
 USER_COMMAND_FILE="$USER_COMMANDS_DIR/handoff-to-bridge.md"
+if [ ! -f "$HANDOFF_TEMPLATE" ]; then
+  echo "✗ template missing: $HANDOFF_TEMPLATE" >&2
+  exit 1
+fi
 mkdir -p "$USER_COMMANDS_DIR"
-cat > "$USER_COMMAND_FILE" <<EOF
----
-description: Hand off this Claude Code session to claude-bridge (tmux)
----
-
-Run the handoff script and relay its output to the user:
-
-\`\`\`
-bash $HANDOFF_SCRIPT_ABS
-\`\`\`
-
-The script:
-1. Detects the current session ID from the parent claude \`--resume\` arg
-2. Sends \`spawn_request\` to the dispatcher via Unix socket (does NOT touch any front-end channel directly)
-3. Dispatcher spawns \`claude --resume <sessionId>\` in a tmux pane
-4. Dispatcher's channel adapter surfaces "handoff: spawning ..." to the user
-
-After the script confirms success, remind the user to \`/exit\` this local session to avoid concurrent writes to the same session JSONL.
-EOF
+sed "s|__HANDOFF_SCRIPT_ABS__|$HANDOFF_SCRIPT_ABS|g" "$HANDOFF_TEMPLATE" > "$USER_COMMAND_FILE"
 echo "✓ /handoff-to-bridge 커맨드 등록됨 — $USER_COMMAND_FILE"
 
 echo
