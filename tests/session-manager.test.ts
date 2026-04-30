@@ -25,6 +25,7 @@ function fakeTmux(): SessionTmux & { spawned: string[]; killed: string[] } {
 
 function makeSpawnConfig(): SpawnConfig {
   return {
+    mode: "bridge",
     channelName: "test_channel",
     blockedTools: ["tool1"],
     allowedTools: ["tool2"],

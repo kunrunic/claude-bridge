@@ -66,6 +66,63 @@ export type IpcSpawnRequest = {
   skipPermissions?: boolean;
 };
 
+// ── CLI (cb 명령어) ↔ dispatcher RPC ──────────────────────────────────────
+//
+// 같은 dispatcher Unix 소켓을 MCP server 와 공유한다. op 로 분기.
+// 각 cb 호출 = 1 connection: connect → cli_request → cli_response → close.
+
+export type CliRequest =
+  | { op: "cli_request"; request_id: string; command: "list_sessions" }
+  | {
+      op: "cli_request";
+      request_id: string;
+      command: "spawn";
+      cwd?: string;
+      skipPermissions?: boolean;
+    }
+  | { op: "cli_request"; request_id: string; command: "kill"; target: string }
+  | { op: "cli_request"; request_id: string; command: "list_recent"; limit?: number }
+  | {
+      op: "cli_request";
+      request_id: string;
+      command: "resume";
+      target: string;
+      fork?: boolean;
+      skipPermissions?: boolean;
+    };
+
+export type CliSessionInfo = {
+  id: string;
+  label: string;
+  tmuxName: string;
+  state: string;
+  signal: string;
+  isActive: boolean;
+};
+
+export type CliRecentInfo = {
+  id: string;
+  project: string;
+  title: string;
+  mtimeText: string;
+};
+
+export type CliResponseData =
+  | { kind: "list_sessions"; sessions: CliSessionInfo[]; activeId?: string }
+  // tmuxName 포함 — cb new 가 spawn 응답 받자마자 추가 RPC 없이 바로 tmux attach 가능.
+  | { kind: "spawn"; id: string; label: string; tmuxName: string }
+  | { kind: "kill"; success: boolean; message?: string }
+  | { kind: "list_recent"; recent: CliRecentInfo[] }
+  | { kind: "resume"; message: string };
+
+export type CliResponse = {
+  op: "cli_response";
+  request_id: string;
+  ok: boolean;
+  data?: CliResponseData;
+  error?: string;
+};
+
 export type IpcMessage =
   | IpcHello
   | IpcInbound
@@ -75,7 +132,9 @@ export type IpcMessage =
   | IpcShutdown
   | IpcReplySent
   | IpcSessionState
-  | IpcSpawnRequest;
+  | IpcSpawnRequest
+  | CliRequest
+  | CliResponse;
 
 export class LineSocket {
   private buf = "";

@@ -4,7 +4,9 @@ import { z } from "zod";
 import { paths } from "../../core/paths.ts";
 
 const ConfigSchema = z.object({
-  botToken: z.string().min(10),
+  // botToken 미설정 → Telegram 채널 비활성화 (CLI-only 모드).
+  // dispatcher 가 dispatch 시 telegram 채널 생성 자체를 건너뛴다.
+  botToken: z.string().min(10).optional(),
   allowlist: z.array(z.string()).default([]),
   defaultChatId: z.string().optional(),
   dumpEnabled: z.boolean().default(false),

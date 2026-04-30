@@ -5,6 +5,9 @@ const config = loadConfig();
 if (!config.defaultChatId) {
   throw new Error("defaultChatId missing in config");
 }
+if (!config.botToken) {
+  throw new Error("botToken missing — telegram smoke requires Telegram config");
+}
 const tg = new TelegramClient(config.botToken);
 const id = await tg.sendMessage(
   config.defaultChatId,

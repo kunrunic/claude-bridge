@@ -1,9 +1,13 @@
 # claude-bridge
 
-**Telegram 에서 내 PC 의 Claude Code 를 원격 조작**한다.
+**원격에서 내 PC 의 Claude Code 를 사용**한다.
 외출 중에도, 자기 전 침대에서도 — 진행 중인 개발 세션을 이어간다.
 
-PC 가 켜져 있고 봇이 폴링 중이면 어디서든 동작. Bun + TypeScript. 멀티 세션, 자동 컴팩트, 자동 정리.
+두 가지 사용 채널을 지원하며 **동시 운용 가능**:
+- 📱 **Telegram bot** — 모바일에서 챗 형태로 메시지·승인·상태 확인
+- 💻 **SSH + `cb` CLI** — 원격 셸에서 직접 Claude TUI 에 attach (mdwiz 패턴)
+
+PC 가 켜져 있고 dispatcher 가 떠 있으면 어디서든 동작. Bun + TypeScript. 멀티 세션, 자동 컴팩트, 자동 정리.
 
 ---
 
@@ -24,17 +28,22 @@ PC 가 켜져 있고 봇이 폴링 중이면 어디서든 동작. Bun + TypeScri
 git clone https://github.com/kunrunic/claude-bridge.git
 cd claude-bridge
 bun install
-./bin/setup.sh          # 대화형 — 토큰 입력 + user_id 한 번
+./bin/setup.sh          # 대화형 — 모드 선택 (Telegram+CLI / CLI only)
 ./bin/start.sh          # 백그라운드 기동
 ```
 
-Telegram Bot Token ([@BotFather](https://t.me/botfather)) 과 본인
-Telegram user_id (@userinfobot 으로 확인) 만 있으면 준비 완료. `setup.sh`
-가 `bridge-channel` MCP 서버를 user scope 로 등록하므로 어떤 디렉토리에서 세션을
-spawn 해도 바로 동작한다.
+`setup.sh` 가 두 모드 중 선택하게 한다:
 
-이후 봇에 `/new` 를 보내 새 세션을 만들거나, `/resume` 으로 과거 세션을
-이어갈 수 있다.
+| 모드 | 입력 필요 | 사용 |
+|---|---|---|
+| **Telegram + CLI** | Bot Token ([@BotFather](https://t.me/botfather)) + 본인 user_id (@userinfobot) | 모바일은 Telegram, 원격 SSH 는 `cb` CLI — 둘 다 |
+| **CLI only** | 없음 | 원격 SSH + `cb` CLI 만 (Telegram 미사용) |
+
+`setup.sh` 가 `bin/cb` 를 `~/.local/bin/cb` 로 심링크하면 어떤 cwd 에서든
+`cb help` 로 호출 가능. Telegram 모드면 `bridge-channel` MCP 서버도 user
+scope 에 등록되어 어떤 디렉토리에서 spawn 해도 바로 동작.
+
+이후 봇에 `/new` (Telegram 모드) 또는 `cb new` (어디서든) 로 새 세션을 시작한다.
 
 ---
 
@@ -42,29 +51,34 @@ spawn 해도 바로 동작한다.
 
 ```
 ┌──────────────┐       ┌─────────────────────────────────────┐
-│ Telegram     │ HTTPS │  dispatcher.ts (Bun)                │
-│ Bot API      │<─────>│  polling + session routing          │
+│ Telegram bot │ HTTPS │                                     │
+│  (모바일)    │<─────>│   dispatcher.ts (Bun)               │
+└──────────────┘       │                                     │
+                       │   · channel fan-out (notify/announce)
+┌──────────────┐ socket│   · session registry + IPC server   │
+│ cb CLI       │<─────>│   · tmux orchestration              │
+│  (SSH 원격)  │       │   · tmux status bar 미니맵 갱신     │
 └──────────────┘       └──────────────┬──────────────────────┘
-                                      │ IPC (unix socket)
+                                      │ IPC (Telegram 모드)
                       ┌───────────────┼───────────────┐
                       ▼               ▼               ▼
-              ┌──────────────┐┌──────────────┐┌──────────────┐
-              │ MCP stdio s1 ││ MCP stdio s2 ││ MCP stdio s3 │
-              │ reply/react  ││ reply/react  ││ reply/react  │
-              │ edit/attach  ││ edit/attach  ││ edit/attach  │
-              └──────┬───────┘└──────┬───────┘└──────┬───────┘
-                     │ stdio         │ stdio         │ stdio
-                     ▼               ▼               ▼
               ┌──────────────┐┌──────────────┐┌──────────────┐
               │ Claude Code  ││ Claude Code  ││ Claude Code  │
               │ (tmux cb-s1) ││ (tmux cb-s2) ││ (tmux cb-s3) │
               └──────────────┘└──────────────┘└──────────────┘
 ```
 
-Telegram 메시지는 dispatcher 가 long-polling 으로 받아 **현재 활성 세션**
-의 MCP 서버로 전달한다. Claude 는 답할 준비가 되면 `reply()` 도구를
-호출하고, 그 호출이 다시 dispatcher 를 거쳐 Telegram 으로 나간다. 각 세션은
-독립된 tmux 프로세스 + 독립된 MCP 서버를 갖는다.
+**Telegram 모드** — 메시지는 dispatcher 가 long-polling 으로 받아 **현재 활성 세션**
+의 MCP 서버 (`bridge-channel`) 로 전달. Claude 는 답할 준비가 되면 `reply()`
+도구를 호출하고, 그 호출이 다시 dispatcher 를 거쳐 Telegram 으로 나간다.
+
+**SSH + cb CLI 모드** — 원격에서 SSH 로 호스트에 접속한 뒤 `cb new` /
+`cb attach` 로 Claude TUI 에 직접 들어간다. 채팅 미러링 없이 native TUI 그대로
+— 지연 0ms, vim 모드·scrollback·복붙 모두 동작. dispatcher 는 외부 관리만
+(spawn/kill/registry, tmux status bar 미니맵 갱신).
+
+각 세션은 독립된 tmux 프로세스를 갖고, 두 채널은 동시 운용 가능 — 같은 세션을
+모바일 Telegram 과 데스크톱 SSH 양쪽에서 보거나, 모드별로 다른 세션을 운영해도 됨.
 
 ---
 
@@ -160,6 +174,92 @@ Telegram 에서 보낸 이미지·파일은 로컬에 저장되고, Claude 가 �
 최대 3회)** 을 시도하고, 복구되면 🔄 알림이 Telegram 에 뜬다. 3회 모두
 실패 시 해당 세션은 수동 `/new` 또는 `/resume` 으로 복구.
 
+### 원격 SSH 사용 (`cb` CLI)
+
+원격 머신·모바일 SSH 앱에서 호스트로 접속해 `cb` 로 세션을 다룬다. 입력은
+Claude TUI 에 직접 — 채팅 미러링 X, 지연 0ms.
+
+```
+원격 (노트북, iPad, 폰)         호스트 (PC)
+─────────────────────         ──────────────────
+ SSH 클라이언트                dispatcher (상시)
+                               tmux + Claude
+                               cb CLI
+        │                          │
+        └──── ssh laptop ──────────┘
+              $ cb new            # 새 세션 (즉시 응답)
+              $ cb attach         # tmux attach → Claude TUI
+              # Ctrl-b d 로 detach (Claude 는 백그라운드 유지)
+```
+
+**`cb` 명령**:
+
+| 명령 | 동작 |
+|---|---|
+| `cb sessions` | 활성 세션 목록 (상태/라벨/active 표시) |
+| `cb new [path]` | 새 세션 spawn (path 미지정 시 cwd) |
+| `cb attach [sid\|label]` | `tmux attach-session` (미지정 시 active) |
+| `cb kill <sid>` | 세션 종료 |
+| `cb resume` | 이력에서 picker — 이전 Claude 세션 복원 |
+| `cb resume <id\|index>` / `cb fork <id\|index>` | 즉시 복원 / 분기 |
+
+attach 후 status bar 우측에 미니맵이 표시되어 다른 세션 상태도 한눈에 보인다:
+```
+▶s1·my-app  s2⚠backend  s3⠋docs
+```
+- `▶`: 현재 attach 한 세션
+- sigil: `·idle  ⠋busy  ⚠perm-wait  □compact  ⏸rate-limit  ✗dead`
+- label: 작업 폴더명 (8자 초과 시 truncate)
+
+#### SSH 셋업 (macOS 호스트)
+
+기본적으로 macOS 의 SSH 서버는 꺼져 있다. 한 번만 활성화하면 됨:
+
+1. **시스템 설정 → 일반 → 공유 → 원격 로그인** ON
+2. ⓘ 클릭 → **"다음 사용자만 접근 허용"** 으로 본인 계정만 허용
+3. 클라이언트에서 `ssh user@host` 또는 `ssh user@host -p 2222` (포트 변경 시)
+
+**기본 포트(22) 가 막혔거나 보안이 신경 쓰일 때**:
+
+| 옵션 | 추천 시나리오 |
+|---|---|
+| `Port 2222` 추가 (`/etc/ssh/sshd_config`) | 회사망 / ISP 가 22 inbound 차단 |
+| **Tailscale** (`brew install tailscale`) | 외부 노출 X, 포트 무관, 모바일 앱 무료 |
+| Cloudflare Tunnel | 공인 IP 없는 환경, https 노출 가능 |
+
+가장 간단·안전한 조합: **Tailscale + 시스템 SSH** — 메시 VPN 으로 22 외부 노출
+없이 어디서든 접속 가능.
+
+> 동적 IP / CGNAT / 이동 환경 / 옵션별 단계별 셋업은 별도 가이드: [`docs/networking.md`](docs/networking.md) 참조.
+
+#### 모바일 / 이동 환경 — `mosh` 권장
+
+지하철·카페 이동, Wi-Fi → LTE 전환 같은 네트워크 변경에 강한 SSH 대체:
+
+```bash
+brew install mosh         # 호스트
+mosh user@host            # 클라이언트 (UDP 60000-61000 필요)
+```
+
+장점:
+- 네트워크 끊겨도 자동 복귀, 명령 안 잃음
+- Sleep 후 깨움 즉시 재연결
+- Local echo — 모바일 키보드 즉시 반응
+
+`tmux` 는 이미 detach 상태로 살아있으므로 SSH 끊겨도 Claude 자체는 안 죽지만,
+`mosh` 면 사용자 측 재접속 부담이 사라진다. 고정 데스크면 굳이 필요 없음.
+
+#### 외부에서 dispatcher 안 떠 있을 때
+
+`cb sessions` 등이 명확한 에러로 종료한다:
+```
+dispatcher socket not found: ~/.claude-bridge/dispatcher.sock
+dispatcher 가 실행 중인지 확인하세요. (예: bun run start)
+```
+
+호스트가 sleep 으로 진입하거나 dispatcher 가 중단된 경우. wake 후 `./bin/start.sh`
+실행. macOS 면 `pmset` 으로 자동 sleep 비활성화 가능 (caffeinate 등).
+
 ### 여러 인스턴스 동시 운영
 
 환경변수 `CB_HOME` 으로 전체 런타임 루트를 옮길 수 있다:
@@ -235,8 +335,9 @@ tests/                           # Bun test suite (177 cases)
 ## 설정
 
 `./bin/setup.sh` 가 대화형으로 진행한다. 결과는
-`~/.claude-bridge/config.json` 에 저장:
+`~/.claude-bridge/config.json` 에 저장. 모드별 형태:
 
+**Telegram + CLI 모드**:
 ```json
 {
   "botToken": "123:ABC...",
@@ -245,9 +346,18 @@ tests/                           # Bun test suite (177 cases)
 }
 ```
 
-디렉토리 권한은 자동으로 `0700` / `0600` 으로 강화된다. `bridge-channel`
-MCP 서버는 `claude mcp add -s user` 로 user scope 에 등록되므로 어떤
-cwd 에서 spawn 해도 동작한다.
+**CLI only 모드** (botToken 없음):
+```json
+{
+  "skipPermissions": false,
+  "dumpEnabled": false
+}
+```
+
+디렉토리 권한은 자동으로 `0700` / `0600` 으로 강화된다. Telegram 모드면
+`bridge-channel` MCP 서버가 `claude mcp add -s user` 로 user scope 에 등록되어
+어떤 cwd 에서 spawn 해도 동작. CLI only 모드는 native Claude TUI 만 spawn 하므로
+MCP / channel prompt 미사용.
 
 ## 실행
 
@@ -265,6 +375,8 @@ cwd 에서 spawn 해도 동작한다.
 
 ## 명령어
 
+### Telegram 봇 (Telegram 모드)
+
 | 커맨드 | 동작 |
 |---|---|
 | `/sessions` | 활성 세션 목록 + 탭해서 **전환** |
@@ -273,7 +385,20 @@ cwd 에서 spawn 해도 동작한다.
 | `/fork` | 기존 세션 컨텍스트 상속한 분기 세션 (picker) |
 | `/kill` | 세션 종료 (picker) |
 
-### Claude Code 내부에서 사용하는 커맨드
+### `cb` CLI (양 모드 공통)
+
+| 커맨드 | 동작 |
+|---|---|
+| `cb sessions` | 활성 세션 목록 (텍스트 표) |
+| `cb new [path]` | 새 세션 spawn (path 미지정 시 cwd) |
+| `cb attach [sid\|label]` | tmux attach (미지정 시 active session) |
+| `cb kill <sid>` | 세션 종료 |
+| `cb resume` | 이력 picker (목록 출력) |
+| `cb resume <id\|index>` | 즉시 복원 |
+| `cb fork <id\|index>` | 즉시 분기 |
+| `cb help` | 도움말 |
+
+### Claude Code 내부에서 사용하는 커맨드 (Telegram 모드)
 
 | 커맨드 | 동작 |
 |---|---|

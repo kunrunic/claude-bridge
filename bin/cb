@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# cb — claude-bridge CLI wrapper
+#
+# `bun run src/channels/cli/cli.ts ...` 를 어디서든 호출 가능하게 감싼다.
+# setup.sh 가 ~/.local/bin/cb 로 심링크를 만들어 주면 어떤 cwd 에서든 `cb` 만으로 동작.
+#
+# 환경변수:
+#   CB_DISPATCHER_SOCKET   dispatcher Unix 소켓 경로 (기본: ~/.claude-bridge/dispatcher.sock)
+#   CB_HOME                ~/.claude-bridge 위치 (기본: $HOME/.claude-bridge)
+
+set -euo pipefail
+
+# 심링크여도 실제 위치를 추적해 repo 루트의 src 를 찾는다.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+CLI_ENTRY="$REPO_ROOT/src/channels/cli/cli.ts"
+if [ ! -f "$CLI_ENTRY" ]; then
+  echo "✗ cli entry not found: $CLI_ENTRY" >&2
+  exit 1
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "✗ bun not found on PATH" >&2
+  exit 1
+fi
+
+exec bun run "$CLI_ENTRY" "$@"

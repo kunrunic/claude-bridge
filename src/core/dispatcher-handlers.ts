@@ -1,7 +1,7 @@
 import type { Registry } from "./registry.ts";
 import type { IpcMessage } from "./ipc.ts";
 import type { LineSocket } from "./ipc.ts";
-import type { InboundEvent } from "../channels/telegram/poller.ts";
+import type { InboundEvent } from "./channel.ts";
 import * as anomaly from "./anomaly.ts";
 
 // ── Spawn timeout ─────────────────────────────────────────────────────────────
@@ -136,10 +136,16 @@ export function handleInbound(
     });
     return false;
   }
+  // ChannelInboundMeta 는 string | undefined 를 허용하므로 IpcInbound 의
+  // Record<string, string> 으로 보내기 전 undefined 키를 제거한다.
+  const cleanMeta: Record<string, string> = {};
+  for (const [k, v] of Object.entries(evt.meta)) {
+    if (v !== undefined) cleanMeta[k] = v;
+  }
   ls.send({
     op: "inbound",
     content: evt.content,
-    meta: evt.meta as Record<string, string>,
+    meta: cleanMeta,
   });
   registry.updateState(active.id, { inboundAt: Date.now() });
   return true;

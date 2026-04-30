@@ -43,6 +43,7 @@ function fakeTmux(): FakeTmux {
 }
 
 const cfg: SpawnConfig = {
+  mode: "bridge",
   channelName: "tg_channel",
   blockedTools: ["x"],
   allowedTools: ["y"],

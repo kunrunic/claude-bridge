@@ -32,6 +32,13 @@ export {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  if (!config.botToken) {
+    // 이 server.ts 는 dispatcher 가 spawn 한 Telegram MCP 서버. botToken 없이는
+    // 동작 불가능 — config 가 CLI-only 모드인데도 이 프로세스가 떠 있으면 잘못된
+    // 상태이므로 즉시 종료.
+    console.error("telegram MCP server requires botToken in config — exiting");
+    process.exit(2);
+  }
   const tg = new TelegramClient(config.botToken);
 
   const server = new Server(

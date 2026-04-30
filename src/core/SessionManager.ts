@@ -49,6 +49,14 @@ export type SessionManagerDeps = {
   sockets: Map<string, LineSocket>;
   spawnCfg: core.SpawnConfig;
   announce: (text: string) => void;
+  /**
+   * native 모드 spawn 시 호출. bridge 모드에서는 호출되지 않으며, 대신 hello
+   * IPC 도착 후 dispatcher 가 같은 의미의 ready 처리를 한다.
+   *
+   * native 모드는 MCP 가 없어 hello IPC 가 영원히 안 오므로, spawn 직후 즉시
+   * 세션을 ready 로 간주하고 채널들에 SessionEvent("spawned") fan-out 한다.
+   */
+  onSpawnFinalized?: (sessionId: string) => void;
 };
 
 export class SessionManager {
@@ -81,20 +89,28 @@ export class SessionManager {
       },
       expanded,
     );
-    scheduleSpawnTimeout(
-      this.deps.registry,
-      result.id,
-      result.label,
-      SPAWN_TIMEOUT_MS,
-      this.deps.announce,
-      () => {
-        const s = this.deps.registry.get(result.id);
-        if (s) {
-          try { this.deps.tmux.killSession(s.tmuxName); } catch {}
-          this.deps.registry.remove(result.id);
-        }
-      },
-    );
+    if (this.deps.spawnCfg.mode === "bridge") {
+      // hello IPC 도착까지 대기. 시간 초과 시 spawning → error 처리.
+      scheduleSpawnTimeout(
+        this.deps.registry,
+        result.id,
+        result.label,
+        SPAWN_TIMEOUT_MS,
+        this.deps.announce,
+        () => {
+          const s = this.deps.registry.get(result.id);
+          if (s) {
+            try { this.deps.tmux.killSession(s.tmuxName); } catch {}
+            this.deps.registry.remove(result.id);
+          }
+        },
+      );
+    } else {
+      // native 모드: hello 가 절대 안 오므로 즉시 idle + ready 콜백.
+      // TickObserver 가 signal 갱신 (입력 prompt 표시되면 idle, 작업 중이면 busy).
+      this.deps.registry.updateState(result.id, { state: "idle" });
+      this.deps.onSpawnFinalized?.(result.id);
+    }
     return result;
   }
 
@@ -121,8 +137,8 @@ export class SessionManager {
     return formatSessionList(this.pickerCache);
   }
 
-  refreshPickerCache(): SessionInfo[] {
-    this.pickerCache = this.filterResumable(findSessions(8));
+  refreshPickerCache(limit = 8): SessionInfo[] {
+    this.pickerCache = this.filterResumable(findSessions(limit));
     return this.pickerCache;
   }
 

@@ -8,7 +8,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CB_HOME="${CB_HOME:-$HOME/.claude-bridge}"
-PID_FILE="$CB_HOME/telegram/bot.pid"
+PID_FILE="$CB_HOME/dispatcher.pid"
+
+# Backward compat: 이전 버전이 telegram/bot.pid 에 dispatcher PID 를 적었을 수
+# 있다. dispatcher.pid 가 없는데 telegram/bot.pid 가 있으면 그걸로 fallback.
+LEGACY_PID_FILE="$CB_HOME/telegram/bot.pid"
+if [ ! -f "$PID_FILE" ] && [ -f "$LEGACY_PID_FILE" ]; then
+  PID_FILE="$LEGACY_PID_FILE"
+fi
 
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE" 2>/dev/null || echo "")

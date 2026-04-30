@@ -10,7 +10,12 @@ cd "$(dirname "$0")/.."
 
 CB_HOME="${CB_HOME:-$HOME/.claude-bridge}"
 CONFIG_PATH="$CB_HOME/config.json"
-PID_FILE="$CB_HOME/telegram/bot.pid"
+# dispatcher process 추적용 PID 파일 — 모드(bridge/native)와 무관.
+# Telegram polling lock 의 PID (CB_HOME/telegram/bot.pid) 와는 책임이 다르다:
+#  · dispatcher.pid : start.sh / stop.sh 가 dispatcher 프로세스 자체를 추적
+#  · telegram/bot.pid : TelegramChannel.acquirePollingLock 이 같은 봇 토큰
+#                       중복 폴링 방지용 (bridge 모드에서만 생성됨)
+PID_FILE="$CB_HOME/dispatcher.pid"
 LOG_DIR="$CB_HOME/logs"
 
 FOREGROUND=0
@@ -49,7 +54,7 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$CB_HOME" "$LOG_DIR"
 # prune logs > 7 days
 find "$LOG_DIR" -maxdepth 1 -name "*.log" -type f -mtime +7 -delete 2>/dev/null || true
 

@@ -15,15 +15,28 @@ export type TmuxDriver = {
   hasSession: (name: string) => boolean;
 };
 
+/**
+ * Spawn 모드:
+ *  - "bridge": MCP server (bridge-channel) + channel system prompt 와 함께
+ *    Claude 시작. Telegram 같은 외부 채널이 inbound 메시지를 IPC 로 라우팅하는
+ *    전제. Claude 는 reply / react 등 도구를 통해 응답.
+ *  - "native": claude TUI 만 단순히 spawn. MCP / channel / prompt 모두 미사용.
+ *    사용자가 cb attach (tmux attach) 로 직접 Claude TUI 와 상호작용. CLI-only
+ *    운영 모드 (config 에 botToken 없을 때).
+ */
+export type SpawnMode = "bridge" | "native";
+
 export type SpawnConfig = {
-  channelName: string;
-  blockedTools: string[];
-  allowedTools: string[];
+  mode: SpawnMode;
   socketPath: string;
   botWorkspaceDir: string;
   skipPermissions: boolean;
-  channelPromptFile: string;
-  mcpConfigFile: string;
+  // mode === "bridge" 일 때만 사용. native 모드면 무시.
+  channelName?: string;
+  blockedTools?: string[];
+  allowedTools?: string[];
+  channelPromptFile?: string;
+  mcpConfigFile?: string;
 };
 
 export type SpawnDeps = {
@@ -64,20 +77,27 @@ export function spawnSession(
     session.tmuxName = unique;
   }
   try {
-    const denyArg = deps.cfg.blockedTools.join(",");
-    const allowArg = deps.cfg.allowedTools.join(",");
     const resumeArgs = opts.resumeId
       ? ` --resume ${opts.resumeId}${opts.forkSession ? " --fork-session" : ""}`
       : "";
     const skipPerm = opts.skipPermissions ?? deps.cfg.skipPermissions;
     const skipPermArgs = skipPerm ? " --dangerously-skip-permissions" : "";
-    deps.tmux.newSession({
-      name: session.tmuxName,
-      command:
+    let command: string;
+    if (deps.cfg.mode === "bridge") {
+      const denyArg = (deps.cfg.blockedTools ?? []).join(",");
+      const allowArg = (deps.cfg.allowedTools ?? []).join(",");
+      command =
         `claude --disallowedTools ${denyArg} --allowedTools ${allowArg}${resumeArgs}${skipPermArgs}` +
         ` --append-system-prompt-file "${deps.cfg.channelPromptFile}"` +
         ` --mcp-config "${deps.cfg.mcpConfigFile}"` +
-        ` --dangerously-load-development-channels server:${deps.cfg.channelName}`,
+        ` --dangerously-load-development-channels server:${deps.cfg.channelName}`;
+    } else {
+      // native: 외부 채널 없이 Claude TUI 만. 사용자가 cb attach 로 직접 사용.
+      command = `claude${resumeArgs}${skipPermArgs}`;
+    }
+    deps.tmux.newSession({
+      name: session.tmuxName,
+      command,
       cwd,
       env: {
         CB_DISPATCHER_SOCKET: deps.cfg.socketPath,

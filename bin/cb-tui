@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# cb-tui — DEPRECATED.
+#
+# 이전 진입점이지만 이제 ssh 가 직접 cb-menu tmux session 에 attach 하는 구조로
+# 변경됨. 사용자가 명시적으로 호출하면 cb-menu attach 로 redirect.
+#
+# 환경변수:
+#   CB_INSTANCE   menu session 이름 분기 (있으면 cb-<inst>-menu, 없으면 cb-menu)
+
+set -euo pipefail
+
+MENU_NAME="cb${CB_INSTANCE:+-$CB_INSTANCE}-menu"
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "✗ tmux 미설치." >&2
+  exit 1
+fi
+
+if ! tmux has-session -t "=$MENU_NAME" 2>/dev/null; then
+  cat >&2 <<EOF
+✗ cb-menu 세션($MENU_NAME) 미가동 — dispatcher 가 켜져 있는지 확인:
+    ./bin/start.sh
+EOF
+  exit 1
+fi
+
+echo "(cb-tui 는 deprecated — cb-menu 에 attach)" >&2
+exec tmux attach-session -t "=$MENU_NAME"

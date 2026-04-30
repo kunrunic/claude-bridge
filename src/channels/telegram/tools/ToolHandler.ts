@@ -161,7 +161,9 @@ export class ToolHandler {
   private async handleDownloadAttachment(rawArgs: unknown): Promise<McpResult> {
     const args = DownloadArgs.parse(rawArgs);
     const filePath = await this.tg.getFilePath(args.file_id);
-    const localPath = await saveAttachment(this.config.botToken, args.file_id, filePath);
+    // ToolHandler 는 server.ts (Telegram MCP) 안에서만 사용되고, server.ts 는
+    // botToken 없으면 즉시 종료한다 — 이 시점에 botToken 은 항상 string.
+    const localPath = await saveAttachment(this.config.botToken!, args.file_id, filePath);
     return {
       content: [{ type: "text", text: `downloaded to ${localPath}` }],
     };
