@@ -8,6 +8,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# bun 이 비인터랙티브 SSH 세션에서 PATH 에 없을 수 있음 — 공통 위치 탐색
+if ! command -v bun >/dev/null 2>&1; then
+  for _d in "$HOME/.bun/bin" "/usr/local/bin" "$HOME/.local/bin"; do
+    [ -x "$_d/bun" ] && export PATH="$_d:$PATH" && break
+  done
+fi
+
 CB_HOME="${CB_HOME:-$HOME/.claude-bridge}"
 CONFIG_PATH="$CB_HOME/config.json"
 # dispatcher process 추적용 PID 파일 — 모드(bridge/native)와 무관.
