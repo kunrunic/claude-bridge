@@ -44,6 +44,17 @@ mdwiz:
 2. `shell_run("tailscale status 2>/dev/null | head -5 || echo 'tailscale: not installed'")`
 3. `shell_run("cat ~/.cb/hosts.json 2>/dev/null || echo 'cb hosts: none'")`
 
+**요약 시 판단 기준:**
+
+| 항목 | home 머신 (dispatcher 서버) | office 머신 (클라이언트) |
+|---|---|---|
+| dispatcher | ✅ running 정상 / ❌ stopped 문제 | 해당 없음 (무시) |
+| tailscale | ✅ Connected 정상 / ⚠️ offline·없음 주의 | ✅ Connected 정상 / ⚠️ offline·없음 주의 |
+| cb hosts | **없어도 정상** (자기가 서버) | ✅ 등록됨 정상 / ⚠️ 없으면 `cb add` 안내 |
+
+> 현재 머신이 home(서버)인지 office(클라이언트)인지는 dispatcher 실행 여부로 판단:
+> dispatcher running → home 머신으로 간주, cb hosts 없음을 경고로 표시하지 말 것.
+
 요약 후 아래 **작업 표**를 보여주고 어떤 작업으로 갈지 chat 으로 묻기 (`AskUserQuestion` 금지 — 번호 선택으로).
 
 ---
