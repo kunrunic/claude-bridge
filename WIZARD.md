@@ -5,10 +5,20 @@ mdwiz:
     - "Passphrase:"
     - "Are you sure"
     - "continue connecting"
+    - "overwrite config\\?"
+    - "Choose \\[1\\]:"
+    - "Bot Token:"
+    - "your user_id:"
+    - "PATH 추가\\?"
+    - "지금 설치할까요\\?"
+    - "continue anyway\\?"
   commands:
     - match: "bash bin/setup.sh*"
-      inactivity_sec: 300
+      inactivity_sec: 10
       timeout_sec: 600
+    - match: "bash bin/repairer.sh*"
+      inactivity_sec: 10
+      timeout_sec: 300
     - match: "bun install*"
       inactivity_sec: 120
       timeout_sec: 300
