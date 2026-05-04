@@ -67,7 +67,10 @@ export function spawnSession(
   opts: SpawnOptions = {},
 ): { id: string; label: string } {
   const cwd = opts.cwd ?? deps.cfg.botWorkspaceDir;
-  const label = opts.label ?? basename(cwd);
+  // macOS APFS 한글 디렉토리명은 NFD(자모 분해)로 저장되고 readdir/readdirSync 가
+  // raw 바이트를 그대로 반환 — `ls` 만 NFC 로 정규화함. 표시용 label 은 NFC 로
+  // 정규화해 cb-menu / Telegram announce 등에서 정상 표시되도록.
+  const label = (opts.label ?? basename(cwd)).normalize("NFC");
   const session = deps.registry.create(label);
   if (opts.source) {
     deps.registry.updateState(session.id, { source: opts.source });

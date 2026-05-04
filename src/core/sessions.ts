@@ -125,11 +125,12 @@ export function findSessions(limit = 8): SessionInfo[] {
         const projSlug = proj.replace(/^-+/, "");
         projShort = projSlug.split("-").pop() ?? "";
       }
+      // macOS APFS NFD 한글 디렉토리명을 NFC 로 정규화해 표시 깨짐 방지.
       results.push({
         id,
-        project: projShort,
-        title: parsed.first.slice(0, 40),
-        last: parsed.last.slice(0, 40),
+        project: projShort.normalize("NFC"),
+        title: parsed.first.slice(0, 40).normalize("NFC"),
+        last: parsed.last.slice(0, 40).normalize("NFC"),
         mtime: activityMs,
         mtimeText: formatMtime(activityMs),
       });

@@ -46,12 +46,14 @@ function listDirs(dir: string, showHidden: boolean): Entry[] {
     return [];
   }
   const out: Entry[] = [];
-  for (const name of items) {
-    if (!showHidden && name.startsWith(".")) continue;
-    const path = resolve(dir, name);
+  for (const rawName of items) {
+    if (!showHidden && rawName.startsWith(".")) continue;
+    const path = resolve(dir, rawName);
     try {
       const st = statSync(path);
-      if (st.isDirectory()) out.push({ name, path });
+      // path 는 fs 호환 위해 raw(NFD 가능) 그대로, 표시 name 만 NFC 로 정규화 —
+      // macOS APFS 한글 디렉토리명 깨짐 방지.
+      if (st.isDirectory()) out.push({ name: rawName.normalize("NFC"), path });
     } catch {
       // permission denied / broken symlink — 무시
     }
@@ -179,7 +181,7 @@ export function DirBrowser({ initialCwd, onConfirm, onCancel }: Props) {
       <Text bold>New session — cwd 선택</Text>
       <Box marginTop={1}>
         <Text color="green">▸ </Text>
-        <Text>{cwd}</Text>
+        <Text>{cwd.normalize("NFC")}</Text>
       </Box>
       {query && (
         <Box>
