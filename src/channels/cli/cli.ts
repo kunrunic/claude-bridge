@@ -11,6 +11,9 @@
  *   cb add [<name>]          호스트 등록 (대화형 default, 플래그도 지원)
  *   cb list                  등록된 호스트 목록
  *   cb remove <name>         등록 해제
+ *   cb start <name>          원격 dispatcher 시작
+ *   cb stop <name>           원격 dispatcher 정지
+ *   cb restart <name>        원격 dispatcher 재시작
  *   cb help                  도움말
  *
  * 설계:
@@ -192,6 +195,44 @@ function guessDefaultKey(): string {
   return "";
 }
 
+// ── start / stop / restart ──────────────────────────────────────────────────
+
+async function cmdDispatcherControl(
+  action: "start" | "stop" | "restart",
+  name: string,
+): Promise<void> {
+  const entry = getHost(name);
+  if (!entry) {
+    fail(
+      `unknown host: ${name}\n` +
+        `등록된 호스트: ${Object.keys(loadHosts().hosts).join(", ")}`,
+    );
+  }
+
+  // 원격 PATH 보강 + claude-bridge 디렉터리 자동 탐색 (common 위치 순서로 시도)
+  const remoteCmd = [
+    'PATH="$HOME/.bun/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"',
+    'DIR=""',
+    'for d in ~/claude-bridge ~/claude-bridge2 ~/claude-bridge3; do [ -f "$d/bin/start.sh" ] && DIR="$d" && break; done',
+    '[ -z "$DIR" ] && { echo "✗ claude-bridge 디렉터리를 찾을 수 없음" >&2; exit 1; }',
+    'cd "$DIR"',
+    `bash bin/${action}.sh`,
+  ].join("; ");
+
+  const args = [
+    "-o", "StrictHostKeyChecking=accept-new",
+    ...toSshArgs(entry),
+    remoteCmd,
+  ];
+  const child = spawn("ssh", args, { stdio: "inherit" });
+  return new Promise((resolve, reject) => {
+    child.on("exit", (code) => {
+      process.exit(code ?? 0);
+    });
+    child.on("error", (e) => reject(new Error(`ssh failed: ${String(e)}`)));
+  });
+}
+
 // ── list / remove / help ────────────────────────────────────────────────────
 
 function cmdList(): void {
@@ -247,6 +288,9 @@ function printHelp(): void {
     "  cb add [<name>] [...]    호스트 등록 (대화형 default; --host=, --port=, --user=, --key= 플래그)",
     "  cb list                  등록된 호스트 목록",
     "  cb remove <name>         등록 해제",
+    "  cb start <name>          원격 dispatcher 시작",
+    "  cb stop <name>           원격 dispatcher 정지",
+    "  cb restart <name>        원격 dispatcher 재시작",
     "  cb help                  도움말",
     "",
     "원격지에 'cb' 라는 명령은 없음 — 접속하면 자동으로 cb-menu (tmux session) 에 attach.",
@@ -291,6 +335,14 @@ async function main(): Promise<void> {
       const name = argv[1];
       if (!name) fail("usage: cb connect <name>");
       await cmdConnect(name);
+      return;
+    }
+    case "start":
+    case "stop":
+    case "restart": {
+      const hostName = argv[1];
+      if (!hostName) fail(`usage: cb ${cmd} <name>`);
+      await cmdDispatcherControl(cmd, hostName);
       return;
     }
     default:

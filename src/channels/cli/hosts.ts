@@ -37,6 +37,7 @@ const HOSTS_PATH = join(CB_DIR, "hosts.json");
 const RESERVED_NAMES = new Set([
   "add", "list", "remove", "rm", "help", "-h", "--help",
   "connect", "co", "edit",
+  "start", "stop", "restart",
 ]);
 
 function ensureCbDir(): void {
