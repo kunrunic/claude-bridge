@@ -65,6 +65,12 @@ mkdir -p "$CB_HOME" "$LOG_DIR"
 # prune logs > 7 days
 find "$LOG_DIR" -maxdepth 1 -name "*.log" -type f -mtime +7 -delete 2>/dev/null || true
 
+# Shift+Enter 등 extended key sequence 가 SSH 재접속 후에도 동작하도록.
+# tmux 3.3+ 에서 지원. 구버전은 무시.
+# client-attached 훅: 재접속 시마다 refresh-client 로 extended key 재협상 강제.
+tmux set -g extended-keys on 2>/dev/null || true
+tmux set-hook -g client-attached "refresh-client" 2>/dev/null || true
+
 LOG_FILE="$LOG_DIR/$(date +%Y-%m-%d).log"
 
 if [ "$FOREGROUND" = "1" ]; then

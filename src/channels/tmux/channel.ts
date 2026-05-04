@@ -137,7 +137,7 @@ export class TmuxStatusChannel implements Channel {
       status.setStatusFormat(
         tmuxName,
         1,
-        "#[align=right]F1 sessions  F2 new  F3/F4 prev/next  Ctrl-b d disconnect",
+        "#[align=right]F1 sessions  F2 new  F3/F4 prev/next  F5 disconnect  F6 handoff",
       );
       // Claude Code 가 keyboard focus 추적용으로 focus-events 사용 — default off 라
       // 시작 시 안내 메시지 출력. 켜두면 깔끔.

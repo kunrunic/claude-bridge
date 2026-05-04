@@ -3,12 +3,15 @@
  *
  * 키:
  *   ↑↓ / j k         선택
- *   Enter            switch-client → 해당 세션 attach (이 메뉴 client 가 점프)
+ *   Enter            switch-client → 해당 세션 attach
  *   1~9              직접 인덱스 선택 + 즉시 switch
  *   n                new session 모드 (cwd browser)
  *   r                resume 모드 (list_recent picker)
  *   x                선택한 세션 kill (확인 표시)
- *   q                detach (메뉴 client 만 끊김 — 메뉴 자체는 영속)
+ *   q                disconnect (SSH 접속 해제 — 메뉴 자체는 영속)
+ *
+ * F-key (tmux root, claude 세션 안에서만 의미 있음):
+ *   F1  sessions  F2  new  F3/F4  prev/next  F5  back to menu  F6  handoff to bridge
  */
 
 import { Box, Text, useInput } from "ink";
@@ -22,7 +25,7 @@ type Props = {
   onNew: () => void;
   onResume: () => void;
   onKill: (s: CliSessionInfo) => void;
-  onDetach: () => void;
+  onDisconnect: () => void;
 };
 
 function sigil(s: CliSessionInfo, spin: string): string {
@@ -55,7 +58,7 @@ function stateLabel(s: CliSessionInfo): string {
   return "idle";
 }
 
-export function SessionList({ sessions, onSelect, onNew, onResume, onKill, onDetach }: Props) {
+export function SessionList({ sessions, onSelect, onNew, onResume, onKill, onDisconnect }: Props) {
   const rows = sessions.filter((s) => s.state !== "dead");
   const [idx, setIdx] = useState(0);
   const [confirmKill, setConfirmKill] = useState<CliSessionInfo | undefined>();
@@ -100,7 +103,7 @@ export function SessionList({ sessions, onSelect, onNew, onResume, onKill, onDet
       const s = rows[idx];
       if (s) setConfirmKill(s);
     } else if (input === "q") {
-      onDetach();
+      onDisconnect();
     } else if (/^[1-9]$/.test(input)) {
       const n = Number(input) - 1;
       const s = rows[n];
@@ -122,19 +125,28 @@ export function SessionList({ sessions, onSelect, onNew, onResume, onKill, onDet
           <Text color="green">r</Text>
           <Text dimColor>=resume </Text>
           <Text color="green">q</Text>
-          <Text dimColor>=detach</Text>
+          <Text dimColor>=disconnect</Text>
         </Box>
       )}
       {rows.length > 0 && (
         <Box flexDirection="column" marginTop={1}>
           {rows.map((s, i) => {
             const cursor = i === idx ? "▶" : " ";
-            const activeTag = s.isActive ? " (active)" : "";
             const colorProps = i === idx ? { color: "cyan" as const } : {};
+            // isActive 가 noAutoSwitch 보다 우선 — F6 handoff 로 SSH 세션이
+            // Telegram active 가 되면 [Telegram] 표시.
+            const ownerLabel = s.isActive
+              ? { text: " [Telegram]", color: "yellow" as const }
+              : s.noAutoSwitch
+                ? { text: " [SSH]", color: "gray" as const }
+                : undefined;
             return (
-              <Text key={s.id} {...colorProps}>
-                {cursor} {String(i + 1)}. {s.id} {sigil(s, spin)} {s.label.padEnd(14).slice(0, 14)} {stateLabel(s)}{activeTag}
-              </Text>
+              <Box key={s.id} flexDirection="row">
+                <Text {...colorProps}>
+                  {cursor} {String(i + 1)}. {s.id} {sigil(s, spin)} {s.label.padEnd(14).slice(0, 14)} {stateLabel(s)}
+                </Text>
+                {ownerLabel && <Text color={ownerLabel.color}>{ownerLabel.text}</Text>}
+              </Box>
             );
           })}
         </Box>
@@ -146,7 +158,7 @@ export function SessionList({ sessions, onSelect, onNew, onResume, onKill, onDet
           </Text>
         ) : (
           <Text dimColor>
-            ↑↓ 이동 · Enter attach · n new · r resume · x kill · q detach
+            ↑↓ 이동 · Enter attach · n new · r resume · x kill · q disconnect
           </Text>
         )}
       </Box>

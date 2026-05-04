@@ -19,8 +19,8 @@ export function switchToSession(name: string): TmuxCmdResult {
   return tmux(["switch-client", "-t", `=${name}`]);
 }
 
-/** self detach — ssh 입장에서 보면 ssh 종료 효과. 메뉴 프로세스는 그대로 영속. */
-export function detachSelf(): TmuxCmdResult {
+/** disconnect — ssh 접속 해제. 메뉴 프로세스는 그대로 영속. */
+export function disconnectSelf(): TmuxCmdResult {
   return tmux(["detach-client"]);
 }
 

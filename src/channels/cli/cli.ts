@@ -66,6 +66,7 @@ const REMOTE_ENTRY_CMD = [
   'MENU_NAME="cb${CB_INSTANCE:+-$CB_INSTANCE}-menu"',
   'command -v tmux >/dev/null 2>&1 || { echo "tmux 가 호스트에 설치돼 있지 않습니다." >&2; exit 1; }',
   'tmux has-session -t "=$MENU_NAME" 2>/dev/null || { echo "cb-menu 세션($MENU_NAME) 미가동 — dispatcher 가 켜져 있는지 확인:" >&2; echo "    ./bin/start.sh" >&2; exit 1; }',
+  'tmux set -g extended-keys on 2>/dev/null || true',
   'exec tmux attach-session -t "=$MENU_NAME"',
 ].join("; ");
 

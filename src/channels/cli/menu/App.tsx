@@ -12,7 +12,7 @@
 import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
 import { rpc } from "./rpc.ts";
-import { switchToSession, detachSelf, killTmuxSession } from "./tmuxCmd.ts";
+import { switchToSession, disconnectSelf, killTmuxSession } from "./tmuxCmd.ts";
 import { SessionList } from "./SessionList.tsx";
 import { DirBrowser } from "./DirBrowser.tsx";
 import { ResumePicker } from "./ResumePicker.tsx";
@@ -80,6 +80,16 @@ export function App() {
   }, [info]);
 
   const onSelect = (s: CliSessionInfo): void => {
+    // cb-menu 에서 active 세션을 선택 = SSH 가 control 을 가져옴.
+    // origin 무관(Telegram-spawn 도 동일) — Telegram active 해제하고 [SSH] 로 전환.
+    // 다시 Telegram 으로 넘기려면 그 세션 안에서 F6.
+    if (s.isActive) {
+      void rpc({
+        op: "cli_request",
+        command: "clear_active",
+        expected_session_id: s.id,
+      }).catch((e) => setError(`clear_active 실패: ${String(e)}`));
+    }
     const r = switchToSession(s.tmuxName);
     if (r.code !== 0) setError(`switch-client 실패: ${r.stderr.trim()}`);
   };
@@ -139,8 +149,8 @@ export function App() {
     if (s.tmuxName) killTmuxSession(s.tmuxName);
   };
 
-  const onDetach = (): void => {
-    detachSelf();
+  const onDisconnect = (): void => {
+    disconnectSelf();
   };
 
   return (
@@ -167,7 +177,7 @@ export function App() {
             onNew={() => setMode("new")}
             onResume={() => setMode("resume")}
             onKill={onKill}
-            onDetach={onDetach}
+            onDisconnect={onDisconnect}
           />
         )}
         {mode === "new" && (

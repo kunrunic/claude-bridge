@@ -308,7 +308,32 @@ EOF
   esac
 fi
 
-# ── 10. 완료 ────────────────────────────────────────────────────────────────
+# ── 10. cb localhost 자동 등록 ──────────────────────────────────────────────
+# 셋업 호스트에서 즉시 `cb localhost` 로 cb-menu 진입 가능하도록 기본 등록.
+# 이미 있으면 건너뜀. SSH 키/sshd 설정은 사용자 책임 (실패 시 메시지로 안내).
+
+CB_BIN="$LOCAL_BIN/cb"
+if [ -x "$CB_BIN" ] || [ -L "$CB_BIN" ]; then
+  echo
+  echo "── cb localhost 등록 ────────────────────"
+  if "$CB_BIN" list 2>/dev/null | awk 'NR>2 {print $1}' | grep -qx "localhost"; then
+    echo "✓ 이미 등록됨"
+  else
+    if "$CB_BIN" add localhost \
+        --host=localhost \
+        --port=22 \
+        --user="$USER" \
+        --key="" </dev/null >/dev/null 2>&1; then
+      echo "✓ cb localhost 등록 — 같은 머신에서 'cb localhost' 로 진입 가능"
+      echo "  (sshd 가 켜져 있고 ~/.ssh/authorized_keys 에 키 등록 필요)"
+    else
+      echo "⚠️  cb localhost 등록 실패 — 수동 등록:"
+      echo "    cb add localhost --host=localhost --user=\"\$USER\""
+    fi
+  fi
+fi
+
+# ── 11. 완료 ────────────────────────────────────────────────────────────────
 
 echo
 printf '========================================\n'
