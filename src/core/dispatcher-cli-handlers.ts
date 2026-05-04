@@ -17,6 +17,10 @@ import type { CliRequest, CliResponse, CliSessionInfo, CliRecentInfo } from "./i
 export type CliHandlerDeps = {
   registry: Registry;
   sessions: SessionManager;
+  // active 변경(set/clear) 시 dispatcher 가 채널 fan-out + IPC push 처리.
+  // clear_active 핸들러에서만 사용 — 다른 명령은 통과.
+  announce?: (text: string) => void;
+  onActiveChangedRequest?: (previousId: string | undefined) => void;
 };
 
 function ok(requestId: string, data: NonNullable<CliResponse["data"]>): CliResponse {
@@ -43,6 +47,8 @@ export function handleCliRequest(
         return handleListRecent(msg, deps);
       case "resume":
         return handleResume(msg, deps);
+      case "clear_active":
+        return handleClearActive(msg, deps);
     }
   } catch (e) {
     return err(msg.request_id, String(e));
@@ -58,6 +64,7 @@ function handleListSessions(requestId: string, deps: CliHandlerDeps): CliRespons
     state: s.state,
     signal: s.signal,
     isActive: active?.id === s.id,
+    noAutoSwitch: !!s.noAutoSwitch,
   }));
   const data: { kind: "list_sessions"; sessions: CliSessionInfo[]; activeId?: string } = {
     kind: "list_sessions",
@@ -71,7 +78,7 @@ function handleSpawn(
   msg: Extract<CliRequest, { command: "spawn" }>,
   deps: CliHandlerDeps,
 ): CliResponse {
-  const opts: { cwd?: string; skipPermissions?: boolean } = {};
+  const opts: { cwd?: string; skipPermissions?: boolean; autoSwitch?: boolean } = { autoSwitch: false };
   if (msg.cwd) opts.cwd = msg.cwd;
   if (msg.skipPermissions) opts.skipPermissions = msg.skipPermissions;
   const r = deps.sessions.spawn(opts);
@@ -119,6 +126,34 @@ function handleResume(
     msg.target,
     msg.fork ?? false,
     msg.skipPermissions ?? false,
+    false,  // CLI(SSH) 트리거 — Telegram active 자동 전환 억제
   );
   return ok(msg.request_id, { kind: "resume", message });
+}
+
+function handleClearActive(
+  msg: Extract<CliRequest, { command: "clear_active" }>,
+  deps: CliHandlerDeps,
+): CliResponse {
+  const prev = deps.registry.active()?.id;
+  if (prev !== msg.expected_session_id) {
+    // race: 이미 다른 세션이 active 로 바뀜 — 무시
+    return ok(msg.request_id, {
+      kind: "clear_active",
+      cleared: false,
+      reason: prev ? `current_active=${prev}` : "no_active",
+    });
+  }
+  const target = deps.registry.get(prev);
+  deps.registry.clearActive();
+  // noAutoSwitch=true 로 설정해 라벨이 [SSH] 로 전환되도록.
+  // noAutoSwitch 는 더 이상 "spawn origin" 이 아니라 "현재 ownership" 마커.
+  deps.registry.updateState(prev, { noAutoSwitch: true });
+  if (target) {
+    deps.announce?.(
+      `🔀 handoff: [${target.id}][${target.label}] → SSH active`,
+    );
+  }
+  deps.onActiveChangedRequest?.(prev);
+  return ok(msg.request_id, { kind: "clear_active", cleared: true });
 }

@@ -31,6 +31,9 @@ export type SpawnConfig = {
   socketPath: string;
   botWorkspaceDir: string;
   skipPermissions: boolean;
+  // claude 종료 시 attach 한 client 를 보낼 메뉴 tmux 세션 이름.
+  // 정의되지 않으면 종료 후 wrap 없이 그대로 pane 가 닫혀 SSH 가 떨어진다.
+  menuTmuxName?: string;
   // mode === "bridge" 일 때만 사용. native 모드면 무시.
   channelName?: string;
   blockedTools?: string[];
@@ -55,6 +58,8 @@ export type SpawnOptions = {
   // Origin summary saved into the registry session (`source`), surfaced in
   // the "자동 전환됨" announce. Used by /resume and /fork flows.
   source?: string;
+  // false = CLI(SSH)에서 호출 — onSessionReady에서 Telegram active 자동 전환 억제
+  autoSwitch?: boolean;
 };
 
 export function spawnSession(
@@ -66,6 +71,14 @@ export function spawnSession(
   const session = deps.registry.create(label);
   if (opts.source) {
     deps.registry.updateState(session.id, { source: opts.source });
+  }
+  if (opts.autoSwitch === false) {
+    deps.registry.updateState(session.id, { noAutoSwitch: true });
+    // Registry.create() 는 첫 세션을 auto-active 로 승격한다. SSH spawn 은
+    // F6 handoff 전까지 Telegram 미노출이 의도이므로 그 승격을 되돌린다.
+    if (deps.registry.active()?.id === session.id) {
+      deps.registry.clearActive();
+    }
   }
   // collision avoidance: if another tmux session already owns the default
   // name (e.g. user-created `cb-s1` or a prior unclean dispatcher crash left
@@ -94,6 +107,12 @@ export function spawnSession(
     } else {
       // native: 외부 채널 없이 Claude TUI 만. 사용자가 cb attach 로 직접 사용.
       command = `claude${resumeArgs}${skipPermArgs}`;
+    }
+    // claude /exit 등으로 종료 시 attach 한 SSH client 를 cb-menu 로 돌려보낸다.
+    // 안 그러면 pane 가 닫히면서 빈 tmux 세션이 죽고 SSH 가 떨어진다.
+    // switch-client 실패(client 없음 등)는 무해하게 무시.
+    if (deps.cfg.menuTmuxName) {
+      command += ` ; tmux switch-client -t '=${deps.cfg.menuTmuxName}' 2>/dev/null || true`;
     }
     deps.tmux.newSession({
       name: session.tmuxName,
@@ -148,7 +167,9 @@ export function handleSlash(
 ): string {
   switch (cmd.kind) {
     case "sessions": {
-      const list = deps.registry.list();
+      // dead 세션은 socket 끊긴 / 종료된 상태로 사용자가 다시 attach 할 수
+      // 없으므로 목록에서 숨긴다 (cb-menu 도 동일 필터 적용 중).
+      const list = deps.registry.list().filter((s) => s.state !== "dead");
       if (list.length === 0) return "no sessions. /new to start.";
       const active = deps.registry.active();
       return list

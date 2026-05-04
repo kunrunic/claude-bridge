@@ -25,6 +25,8 @@ export type Session = {
   idleSinceTs?: number;       // idle 상태 전환 시각
   remindSentAt?: number;      // 1단계 tmux 재전송 요청 발신 시각
   userNoticeSentAt?: number;  // 2단계 Telegram 알림 발신 시각
+  // CLI(SSH)에서 spawn된 세션 — Telegram active 자동 전환 억제
+  noAutoSwitch?: boolean;
 };
 
 type PersistedSession = Omit<Session, "pendingPermissions" | "socketId"> & {
@@ -106,6 +108,11 @@ export class Registry {
     this.activeId = id;
     this.persist();
     return true;
+  }
+
+  clearActive(): void {
+    this.activeId = undefined;
+    this.persist();
   }
 
   remove(id: string): void {

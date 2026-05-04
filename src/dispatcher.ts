@@ -214,14 +214,17 @@ async function main(): Promise<void> {
     if (!s) return;
     const beforeActiveId = registry.active()?.id;
     if (kind === "spawned") {
-      registry.setActive(sessionId);
+      if (!s.noAutoSwitch) {
+        registry.setActive(sessionId);
+      }
       notifyAll({
         type: "spawned",
         sessionId,
         label: s.label,
         resumed: !!s.source,
+        autoSwitched: !s.noAutoSwitch,
       });
-      if (beforeActiveId !== sessionId) {
+      if (!s.noAutoSwitch && beforeActiveId !== sessionId) {
         onActiveChangedRequest(beforeActiveId);
       } else {
         pushSessionState(sessionId);
@@ -239,6 +242,7 @@ async function main(): Promise<void> {
     socketPath,
     botWorkspaceDir,
     skipPermissions: config.skipPermissions,
+    menuTmuxName: MENU_TMUX_NAME,
     ...(mode === "bridge"
       ? {
           channelName: CHANNEL_NAME,
@@ -320,7 +324,11 @@ async function main(): Promise<void> {
         }
         case "permission_request": {
           permissionToSession.set(msg.request_id, msg.session_id);
+          const isActive = registry.active()?.id === msg.session_id;
           for (const ch of channels) {
+            // Telegram에는 active 세션의 권한 요청만 전달.
+            // handoff 후 active가 되면 자동으로 Telegram으로 흐름.
+            if (!isActive && ch === telegramChannel) continue;
             ch.requestPermission({
               requestId: msg.request_id,
               sessionId: msg.session_id,
@@ -358,6 +366,21 @@ async function main(): Promise<void> {
           }
           break;
         }
+        case "set_active_request": {
+          const target = registry.get(msg.session_id);
+          if (!target) {
+            anomaly.log("set_active_not_found", { sessionId: msg.session_id });
+            break;
+          }
+          const prev = registry.active()?.id;
+          registry.setActive(msg.session_id);
+          // noAutoSwitch=false 로 reset — Telegram 이 control 을 가져갔으므로
+          // 라벨이 [Telegram] 으로 전환되도록 (ownership 모델 일관성).
+          registry.updateState(msg.session_id, { noAutoSwitch: false });
+          announce(`🔀 handoff: [${target.id}][${target.label}] → Telegram active`);
+          onActiveChangedRequest(prev);
+          break;
+        }
         case "spawn_request": {
           anomaly.log("ipc_spawn_request", {
             where: "dispatcher.ipc",
@@ -378,7 +401,12 @@ async function main(): Promise<void> {
         case "cli_request": {
           // cb CLI 요청. 동일 소켓에 MCP 와 공존 — op 로 구분.
           // 같은 cli connection 은 응답 1회 후 close (LineSocket 그대로 유지).
-          const resp = handleCliRequest(msg, { registry, sessions });
+          const resp = handleCliRequest(msg, {
+            registry,
+            sessions,
+            announce,
+            onActiveChangedRequest,
+          });
           ls.send(resp);
           break;
         }
@@ -391,13 +419,20 @@ async function main(): Promise<void> {
     });
     ls.onClose(() => {
       const session = registry.getBySocketId(socketId);
+      const wasActive = session && registry.active()?.id === session.id;
       sockets.delete(socketId);
-      registry.detachSocket(socketId);
-      if (session && session.state !== "dead") {
+      registry.detachSocket(socketId);  // state → dead (mutates session object)
+      if (session) {
+        if (wasActive) {
+          // active 세션이 죽으면 active 포인터를 지우고 Telegram 핀 정리.
+          registry.clearActive();
+          onActiveChangedRequest(session.id);
+        }
         notifyAll({
           type: "disconnected",
           sessionId: session.id,
           label: session.label,
+          sshSession: !!session.noAutoSwitch,
         });
       }
     });

@@ -66,7 +66,7 @@ type SessionRef = { sessionId: string; label: string };
  *  - CLI    : 터미널 redraw
  */
 export type SessionEvent =
-  | ({ type: "spawned"; resumed: boolean } & SessionRef)
+  | ({ type: "spawned"; resumed: boolean; autoSwitched: boolean } & SessionRef)
   | ({ type: "killed" } & SessionRef)
   | ({ type: "active_changed"; previousId?: string } & SessionRef)
   // 모든 세션이 종료되어 active 가 사라진 상태. pin 정리 등에 사용.
@@ -78,7 +78,7 @@ export type SessionEvent =
   | ({ type: "inbound_delivered"; meta?: ChannelInboundMeta } & SessionRef)
   // Claude 가 reply 도구를 호출함. animation 종료, pin 보정 등 트리거.
   | ({ type: "reply_sent"; messageIds?: number[] } & SessionRef)
-  | ({ type: "disconnected" } & SessionRef)
+  | ({ type: "disconnected"; sshSession?: boolean } & SessionRef)
   | ({ type: "reconnected" } & SessionRef);
 
 export type InboundHandler = (evt: InboundEvent) => void | Promise<void>;

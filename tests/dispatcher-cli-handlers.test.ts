@@ -80,7 +80,7 @@ describe("handleCliRequest: spawn", () => {
     expect(resp.data.id).toBe("s7");
     expect(resp.data.label).toBe("myproj");
     expect(sessions.spawn.mock.calls.length).toBe(1);
-    expect(sessions.spawn.mock.calls[0]![0]).toEqual({ cwd: "/tmp/proj" });
+    expect(sessions.spawn.mock.calls[0]![0]).toEqual({ cwd: "/tmp/proj", autoSwitch: false });
   });
 
   test("spawn 실패 (SessionManager throw) → ok=false + error", () => {
@@ -113,6 +113,7 @@ describe("handleCliRequest: spawn", () => {
     expect(sessions.spawn.mock.calls[0]![0]).toEqual({
       cwd: "/x",
       skipPermissions: true,
+      autoSwitch: false,
     });
   });
 });
@@ -177,7 +178,7 @@ describe("handleCliRequest: resume", () => {
     expect(resp.ok).toBe(true);
     if (resp.data?.kind !== "resume") throw new Error("wrong kind");
     expect(resp.data.message).toContain("resuming");
-    expect(sessions.resume.mock.calls[0]).toEqual(["abc", false, false]);
+    expect(sessions.resume.mock.calls[0]).toEqual(["abc", false, false, false]);
   });
 
   test("fork=true, skipPermissions=true 전달", () => {
@@ -193,6 +194,60 @@ describe("handleCliRequest: resume", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { registry: new Registry(), sessions: sessions as any },
     );
-    expect(sessions.resume.mock.calls[0]).toEqual(["1", true, true]);
+    expect(sessions.resume.mock.calls[0]).toEqual(["1", true, true, false]);
+  });
+});
+
+describe("handleCliRequest: clear_active", () => {
+  test("active 가 expected 와 일치 → clear + noAutoSwitch=true + announce + onActiveChangedRequest", () => {
+    const r = new Registry();
+    const s = r.create("alpha");
+    r.setActive(s.id);
+    const announced: string[] = [];
+    const activeChangedCalls: Array<string | undefined> = [];
+    const sessions = fakeSessions();
+    const resp = handleCliRequest(
+      makeRequest({
+        op: "cli_request",
+        command: "clear_active",
+        expected_session_id: s.id,
+      }),
+      {
+        registry: r,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        sessions: sessions as any,
+        announce: (t) => announced.push(t),
+        onActiveChangedRequest: (prev) => activeChangedCalls.push(prev),
+      },
+    );
+    expect(resp.ok).toBe(true);
+    if (resp.data?.kind !== "clear_active") throw new Error("wrong kind");
+    expect(resp.data.cleared).toBe(true);
+    expect(r.active()).toBeUndefined();
+    // ownership 모델: SSH 가 control 을 가져갔으므로 noAutoSwitch=true
+    expect(r.get(s.id)?.noAutoSwitch).toBe(true);
+    expect(announced[0]).toMatch(/handoff.*→ SSH active/);
+    expect(activeChangedCalls).toEqual([s.id]);
+  });
+
+  test("active 가 expected 와 다름 → no-op, cleared=false", () => {
+    const r = new Registry();
+    const a = r.create("alpha");
+    const b = r.create("beta");
+    r.setActive(b.id);  // active = b, not a
+    const sessions = fakeSessions();
+    const resp = handleCliRequest(
+      makeRequest({
+        op: "cli_request",
+        command: "clear_active",
+        expected_session_id: a.id,
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { registry: r, sessions: sessions as any },
+    );
+    expect(resp.ok).toBe(true);
+    if (resp.data?.kind !== "clear_active") throw new Error("wrong kind");
+    expect(resp.data.cleared).toBe(false);
+    expect(r.active()?.id).toBe(b.id);  // 그대로 유지
   });
 });

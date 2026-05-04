@@ -52,7 +52,8 @@ export class SlashHandler {
     const beforeActiveId = registry.active()?.id;
 
     if (cmd.kind === "sessions") {
-      const list = registry.list();
+      // dead 세션은 사용자가 다시 attach 할 수 없으므로 목록에서 제외.
+      const list = registry.list().filter((s) => s.state !== "dead");
       if (list.length === 0) {
         await tg.sendMessage(chatId, "no sessions. /new to start.").catch(() => {});
         return;
@@ -71,7 +72,7 @@ export class SlashHandler {
     }
 
     if (cmd.kind === "kill" && !cmd.target) {
-      const list = registry.list();
+      const list = registry.list().filter((s) => s.state !== "dead");
       if (list.length === 0) {
         await tg.sendMessage(chatId, "no sessions to kill").catch(() => {});
         return;

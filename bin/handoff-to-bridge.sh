@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# Hand off the current local claude session to claude-bridge (tmux-managed).
-# Extracts the current session ID from the parent claude process (`--resume` arg),
-# then sends a `spawn_request` over the dispatcher's Unix socket.
+# Hand off the current SSH tmux session to Telegram (claude-bridge).
 #
-# This script does NOT talk to any front-end channel (Telegram/etc.). It only
-# writes to dispatcher.sock; the dispatcher then spawns the tmux session and
-# whatever channel adapters are attached (Telegram today, others possible)
-# surface the result to the user.
-#
-# After success, the bridge spawns `claude --resume <sessionId>`. The local
-# session is NOT auto-exited — /exit yourself to avoid concurrent writes to
-# the same session JSONL.
+# Two modes:
+#   1. CB_SESSION_ID is set (running inside a cb-managed tmux session):
+#      Send set_active_request — no re-spawn, current session becomes Telegram active.
+#   2. CB_SESSION_ID is not set (standalone claude process):
+#      Extract session ID from --resume arg, then send spawn_request to create
+#      a new bridge-mode session (resume). Original session needs /exit.
 
 set -euo pipefail
 
@@ -23,8 +19,19 @@ if [ ! -S "$SOCKET" ]; then
   exit 1
 fi
 
-# Find the current claude session ID by walking up the process tree and
-# looking for a claude process with --resume <uuid>.
+# ── Mode 1: already inside a cb-managed session ───────────────────────────────
+if [ -n "${CB_SESSION_ID:-}" ]; then
+  PAYLOAD="{\"op\":\"set_active_request\",\"session_id\":\"$CB_SESSION_ID\"}"
+  printf '%s\n' "$PAYLOAD" | nc -U -w 1 "$SOCKET" >/dev/null || {
+    echo "✗ failed to send set_active_request to dispatcher" >&2
+    exit 1
+  }
+  echo "✓ 이 세션($CB_SESSION_ID)을 Telegram active로 전환했습니다."
+  echo "  이제 Telegram에서 이 세션으로 메시지를 보낼 수 있습니다."
+  exit 0
+fi
+
+# ── Mode 2: standalone claude (not in cb tmux) ────────────────────────────────
 SESSION_ID=""
 pid=$PPID
 for _ in 1 2 3 4 5; do
@@ -47,9 +54,6 @@ else
   echo "→ handoff session=$SESSION_ID cwd=$CWD"
 fi
 
-# Send JSON + newline to the dispatcher socket. Fire-and-forget — dispatcher
-# handles the announce via its own channel adapters; this script doesn't wait
-# or know which channel is attached.
 printf '%s\n' "$PAYLOAD" | nc -U -w 1 "$SOCKET" >/dev/null || {
   echo "✗ failed to send spawn_request to dispatcher" >&2
   exit 1

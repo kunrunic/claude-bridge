@@ -60,7 +60,8 @@ export type AnomalyKind =
   | "reply_missing_remind"
   | "reply_missing_remind_failed"
   | "reply_missing_user_notice"
-  | "cb_menu_spawn_failed";
+  | "cb_menu_spawn_failed"
+  | "set_active_not_found";
 
 export function log(kind: AnomalyKind, ctx: Record<string, unknown> = {}): void {
   try {

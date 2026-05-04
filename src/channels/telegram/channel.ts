@@ -116,7 +116,8 @@ export class TelegramChannel implements Channel {
     switch (evt.type) {
       case "spawned": {
         const word = evt.resumed ? "이어하기 준비됨" : "준비됨";
-        this.announce(`✅ [${evt.sessionId}][${evt.label}] ${word} — 자동 전환됨`);
+        const suffix = evt.autoSwitched ? "자동 전환됨" : "SSH에서 생성됨 (/sessions 로 전환)";
+        this.announce(`✅ [${evt.sessionId}][${evt.label}] ${word} — ${suffix}`);
         break;
       }
       case "killed":
@@ -143,10 +144,14 @@ export class TelegramChannel implements Channel {
         break;
       case "disconnected": {
         void this.unpinRepliesOf(evt.sessionId);
-        this.announce(
-          `⚠️ [${evt.sessionId}][${evt.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
-            `재연결 실패 시 /new 또는 /resume 으로 새 세션을 시작하세요.`,
-        );
+        if (evt.sshSession) {
+          this.announce(`🔌 [${evt.sessionId}][${evt.label}] SSH 세션 종료됨`);
+        } else {
+          this.announce(
+            `⚠️ [${evt.sessionId}][${evt.label}] 연결 끊김 — 자동 재연결 시도 중\n` +
+              `재연결 실패 시 /new 또는 /resume 으로 새 세션을 시작하세요.`,
+          );
+        }
         void this.doUpdateActivePin();
         break;
       }

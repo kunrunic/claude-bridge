@@ -147,17 +147,34 @@ describe("handleInbound", () => {
     const announced: string[] = [];
     const result = handleInbound(r, sockets, (t) => announced.push(t), makeInboundEvt("hello"));
     expect(result).toBe(false);
-    expect(announced[0]).toMatch(/no active session/);
+    expect(announced[0]).toMatch(/active 세션 없음/);
+    expect(announced[0]).toMatch(/\/new/);
   });
 
   test("세션 있지만 소켓 없음(spawning 상태) → announce 호출, false 반환", () => {
     const r = new Registry();
-    r.create("alpha"); // state=spawning, socketId=undefined
+    r.create("alpha"); // state=spawning, socketId=undefined → create 가 active 로 승격
     const sockets = new Map<string, LineSocket>();
     const announced: string[] = [];
     const result = handleInbound(r, sockets, (t) => announced.push(t), makeInboundEvt("hello"));
     expect(result).toBe(false);
-    expect(announced[0]).toMatch(/no active session/);
+    expect(announced[0]).toMatch(/소켓 없음/);
+  });
+
+  test("SSH-only 세션만 존재 (active 없음) → F6 handoff 안내", () => {
+    const r = new Registry();
+    const s = r.create("alpha");
+    r.updateState(s.id, { noAutoSwitch: true });
+    // create 가 첫 세션을 auto-active 로 승격하므로 시나리오 재현 위해 명시적으로 해제.
+    // 실 환경에선 active 세션이 죽거나 reconcile 로 정리된 후 SSH 세션만 남는 경우.
+    r.clearActive();
+    const sockets = new Map<string, LineSocket>();
+    const announced: string[] = [];
+    const result = handleInbound(r, sockets, (t) => announced.push(t), makeInboundEvt("hello"));
+    expect(result).toBe(false);
+    expect(announced[0]).toMatch(/SSH/);
+    expect(announced[0]).toMatch(/F6/);
+    expect(announced[0]).toMatch(/handoff/);
   });
 
   test("세션 + 소켓 있음 → 메시지 소켓으로 포워딩, true 반환", () => {

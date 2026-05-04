@@ -66,6 +66,14 @@ export type IpcSpawnRequest = {
   skipPermissions?: boolean;
 };
 
+// 이미 존재하는 세션을 Telegram active로 전환 (재spawn 없음).
+// SSH tmux 세션에서 handoff-to-bridge 가 CB_SESSION_ID 로 전송.
+export type IpcSetActiveRequest = {
+  op: "set_active_request";
+  session_id: string;
+};
+
+
 // ── CLI (cb 명령어) ↔ dispatcher RPC ──────────────────────────────────────
 //
 // 같은 dispatcher Unix 소켓을 MCP server 와 공유한다. op 로 분기.
@@ -89,6 +97,14 @@ export type CliRequest =
       target: string;
       fork?: boolean;
       skipPermissions?: boolean;
+    }
+  // SSH 사용자가 cb-menu 에서 F6 handoff 된 자기 세션을 다시 선택할 때 active 해제.
+  // expected_session_id 가 현재 active 와 다르면 무시(race 방지).
+  | {
+      op: "cli_request";
+      request_id: string;
+      command: "clear_active";
+      expected_session_id: string;
     };
 
 export type CliSessionInfo = {
@@ -98,6 +114,9 @@ export type CliSessionInfo = {
   state: string;
   signal: string;
   isActive: boolean;
+  // SSH(cb new)로 spawn돼 Telegram active 자동 전환이 억제된 세션.
+  // F6 handoff 후엔 isActive=true 가 되지만 noAutoSwitch 는 그대로 유지.
+  noAutoSwitch: boolean;
 };
 
 export type CliRecentInfo = {
@@ -113,7 +132,8 @@ export type CliResponseData =
   | { kind: "spawn"; id: string; label: string; tmuxName: string }
   | { kind: "kill"; success: boolean; message?: string }
   | { kind: "list_recent"; recent: CliRecentInfo[] }
-  | { kind: "resume"; message: string };
+  | { kind: "resume"; message: string }
+  | { kind: "clear_active"; cleared: boolean; reason?: string };
 
 export type CliResponse = {
   op: "cli_response";
@@ -133,6 +153,7 @@ export type IpcMessage =
   | IpcReplySent
   | IpcSessionState
   | IpcSpawnRequest
+  | IpcSetActiveRequest
   | CliRequest
   | CliResponse;
 

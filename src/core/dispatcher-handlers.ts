@@ -113,6 +113,30 @@ export function handleIpcPermissionRequest(
 
 // ── Inbound message handler ───────────────────────────────────────────────────
 
+/**
+ * active 세션이 없을 때의 안내 메시지 — registry 상태별로 분기.
+ *  - 살아있는 세션 0개:           /new · /resume 안내
+ *  - 모두 SSH(noAutoSwitch) 세션: F6 handoff 안내 (SSH 세션은 자동 active 전환 안 됨)
+ *  - 그 외:                      일반 안내
+ */
+function buildNoActiveAnnounce(registry: Registry, hasSocketIssue: boolean): string {
+  if (hasSocketIssue) {
+    return "⚠️ active 세션 소켓 없음 — 세션이 끊긴 상태입니다. /sessions 으로 확인";
+  }
+  const alive = registry.list().filter((s) => s.state !== "dead");
+  if (alive.length === 0) {
+    return "⚠️ active 세션 없음 — /new 또는 /resume 으로 시작하세요";
+  }
+  if (alive.every((s) => s.noAutoSwitch)) {
+    const list = alive.map((s) => `[${s.id}]${s.label}`).join(", ");
+    return (
+      `⚠️ active 세션 없음 — SSH 에서 생성한 세션(${list})은 자동 전환되지 않습니다.\n` +
+      `해당 SSH 세션에서 F6 을 눌러 handoff 하거나, /new 로 새 세션을 생성하세요.`
+    );
+  }
+  return "⚠️ active 세션 없음 — /sessions 으로 상태 확인";
+}
+
 export function handleInbound(
   registry: Registry,
   sockets: Map<string, LineSocket>,
@@ -121,7 +145,7 @@ export function handleInbound(
 ): boolean {
   const active = registry.active();
   if (!active || !active.socketId) {
-    announce("no active session — use /new to spawn one, or /sessions");
+    announce(buildNoActiveAnnounce(registry, !!active));
     anomaly.log("inbound_no_active_session", {
       reason: active ? "socket_missing" : "no_session",
       preview: evt.content.slice(0, 40),

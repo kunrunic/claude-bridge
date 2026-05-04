@@ -142,7 +142,7 @@ export class SessionManager {
     return this.pickerCache;
   }
 
-  resume(target: string, fork: boolean, skipPermissions = false): string {
+  resume(target: string, fork: boolean, skipPermissions = false, autoSwitch = true): string {
     let info: SessionInfo | undefined;
     if (/^\d+$/.test(target)) {
       const idx = Number(target) - 1;
@@ -170,6 +170,7 @@ export class SessionManager {
       const spawnOpts: core.SpawnOptions = { cwd, resumeId: info.id, skipPermissions, source };
       if (info.project) spawnOpts.label = info.project;
       if (fork) spawnOpts.forkSession = true;
+      if (!autoSwitch) spawnOpts.autoSwitch = false;
       const r = this.spawn(spawnOpts);
       const verb = fork ? "forking" : "resuming";
       // Terse reply — full origin (source) is surfaced in the "자동 전환됨"
