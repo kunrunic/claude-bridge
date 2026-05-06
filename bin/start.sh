@@ -71,6 +71,13 @@ find "$LOG_DIR" -maxdepth 1 -name "*.log" -type f -mtime +7 -delete 2>/dev/null 
 tmux set -g extended-keys on 2>/dev/null || true
 tmux set-hook -g client-attached "refresh-client" 2>/dev/null || true
 
+# scrollback / copy-mode UX. mdwiz/bin/mdwiz 정책과 동일.
+# mouse on 은 attach 시점에 cli.ts (REMOTE_ENTRY_CMD) 가 TERM_PROGRAM 보고 분기 set —
+# iTerm2 는 native scrollback 살리려고 mouse off, 그 외는 mouse on 으로 wheel→copy-mode.
+tmux set -g  history-limit 50000 2>/dev/null || true
+tmux set -as terminal-features "*:extkeys" 2>/dev/null || true
+tmux set -wg mode-keys vi 2>/dev/null || true
+
 LOG_FILE="$LOG_DIR/$(date +%Y-%m-%d).log"
 
 if [ "$FOREGROUND" = "1" ]; then

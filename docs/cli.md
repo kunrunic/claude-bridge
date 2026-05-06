@@ -160,6 +160,25 @@ cb-menu 에서 attach 해 Claude TUI 안에 들어간 상태일 때, F-key 로 �
 
 ---
 
+## 권장 터미널 / 스크롤
+
+| 터미널 | Shift+Enter | 트랙패드/휠 스크롤 | 비고 |
+|---|---|---|---|
+| **iTerm2** | ✓ | native scrollback | **권장** — tmux attach 후에도 iTerm2 자체 버퍼 사용 |
+| WezTerm / Alacritty / kitty | ✓ | tmux copy-mode | 확장 키 시퀀스 지원 |
+| macOS Terminal.app | ✗ | tmux copy-mode | Shift+Enter 구분 불가 |
+| VSCode 내장 터미널 | ✗ | tmux copy-mode | Shift+Enter 구분 불가 |
+
+cb 가 attach 시점에 `TERM_PROGRAM` 을 보고 분기:
+
+- `iTerm.app` 이면 `mouse off` 유지 → iTerm2 의 native scrollback 그대로 사용 (전체 history 보존)
+- 그 외엔 `mouse on` 으로 wheel → tmux copy-mode 진입. **`q`** 로 빠짐 (vi 모드)
+- 어느 쪽이든 `Ctrl-b [` 로 명시적 copy-mode 진입은 항상 가능
+
+> 같은 호스트에 다른 터미널로 동시 접속하면 마지막 attach 의 TERM_PROGRAM 으로 server-wide 옵션이 set 돼 다른 클라이언트에 영향. 보통 한 사람이 한 터미널로 쓰는 패턴이라 문제 없음.
+
+---
+
 ## 미니맵
 
 cb-menu 와 각 Claude 세션의 tmux status bar 상단에 표시된다.
