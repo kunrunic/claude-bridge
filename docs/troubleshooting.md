@@ -147,6 +147,65 @@ cb 로 새 세션이 떠도 곧바로 OAuth 로그인 화면. GUI 로 띄운 cla
 
 > 이 항목은 "수정 후 증상 사라짐" 을 관찰한 사례 기반 — exit=36 으로 ACL 거부도 별도 검증됨 (2026-05-06, home). 향후 재발 시 위 진단표로 36/44/0 분기 먼저 확인.
 
+### cb 세션 안의 `gh` 가 logged out 으로 나옴 (macOS)
+
+iTerm 에서 `gh auth status` 는 정상이지만 `cb localhost` 로 attach 한 claude 세션 안에서는 "not logged in". 위 claude 케이스와 **동일한 Keychain ACL 패턴** — `gh` 도 macOS 에선 기본 저장소가 keyring 이라 ssh/tmux 비-interactive 컨텍스트에서 토큰을 못 읽음.
+
+**진단** (cb 세션 안에서):
+
+```bash
+gh auth status
+gh config get -h github.com oauth_token; echo "exit=$?"
+security find-generic-password -s "gh:github.com" -w 2>&1; echo "exit=$?"
+```
+
+claude 케이스의 36/44/0 표 그대로 적용. 36 이면 ACL 거부 확정.
+
+**해결 — 두 가지 중 선택:**
+
+**A. `GH_TOKEN` env var (단일 계정)**
+
+interactive iTerm 에서:
+
+```bash
+gh auth token   # 현재 active 계정 토큰 출력
+```
+
+출력된 값을 `~/.zshenv` 에 **하드코딩**:
+
+```bash
+export GH_TOKEN=gho_xxxxxxxxxxxxxxxxxxxx
+```
+
+> ⚠️ 동적 호출 (`export GH_TOKEN="$(gh auth token)"`) 은 **chicken-and-egg** 로 실패. `~/.zshenv` 가 비-interactive 컨텍스트에서 로드될 때 그 안의 `gh auth token` 호출 자체가 keyring ACL 에 막혀 빈 문자열을 export. 반드시 정적 값을 박아야 함.
+
+한계: env var 는 토큰 1개만 담을 수 있어 cb 세션 안에서 `gh auth switch` 무력. 멀티 계정이 필요하면 B.
+
+**B. `--insecure-storage` 로 hosts.yml 평문 저장 (멀티 계정 보존)**
+
+keyring 자체를 우회해 토큰을 `~/.config/gh/hosts.yml` 평문으로. ACL 무관하게 어느 컨텍스트든 읽힘 + `gh auth switch` 정상 동작.
+
+```bash
+# ~/.zshenv 에 GH_TOKEN export 가 있으면 먼저 삭제 (있으면 항상 우선됨)
+
+# 두 계정 logout (keyring 폐기)
+gh auth logout -h github.com -u <account1>
+gh auth logout -h github.com -u <account2>
+
+# plain-text 저장으로 다시 로그인 (계정마다 반복)
+gh auth login -h github.com --insecure-storage
+
+# active 지정
+gh auth switch -u <account1>
+
+# 확인 — keyring 언급 없이 oauth_token 평문 보이면 OK
+cat ~/.config/gh/hosts.yml
+```
+
+리스크: 같은 머신 다른 사용자가 `~/.config/gh/hosts.yml` 을 읽을 가능성. 혼자 쓰는 노트북·서버라면 사실상 무방.
+
+> 이 항목은 2026-05-07 home 에서 검증 — A 적용 시 단일 계정으로 동작, B 적용 시 cb 세션 안에서 `gh auth switch` 까지 정상.
+
 ### `1 MCP server failed` 가 Claude 안에서 보임
 
 MCP 서버(`bridge-channel`) 가 실행에 실패했다.
