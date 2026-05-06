@@ -143,6 +143,9 @@ async function main(): Promise<void> {
       session_id: sessionId,
       is_active: active?.id === sessionId,
       label: session.label,
+      // noAutoSwitch=true 는 곧 SSH ownership. MCP 가 이 값으로 reply 도구를
+      // 차단해서 SSH TUI 입력에 대한 답이 Telegram 으로 새지 않도록 한다.
+      ownership: session.noAutoSwitch ? "ssh" : "telegram",
     });
   }
 

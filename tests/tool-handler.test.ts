@@ -89,7 +89,7 @@ describe("ToolHandler.reply", () => {
 
   test("활성 세션(provider=active) → prefix 없음", async () => {
     const tg = fakeTg();
-    const provider = { sessionActive: true, sessionLabel: "backend" };
+    const provider = { sessionActive: true, sessionLabel: "backend", sessionOwnership: "telegram" as const };
     const h = new ToolHandler(tg, fakeConfig(), provider);
     await h.handle("reply", { chat_id: "chat1", text: "hello" });
     const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
@@ -98,7 +98,7 @@ describe("ToolHandler.reply", () => {
 
   test("비활성 세션(provider=inactive) → ⚡ label 별도 줄 prefix 주입", async () => {
     const tg = fakeTg();
-    const provider = { sessionActive: false, sessionLabel: "backend" };
+    const provider = { sessionActive: false, sessionLabel: "backend", sessionOwnership: "telegram" as const };
     const h = new ToolHandler(tg, fakeConfig(), provider);
     await h.handle("reply", { chat_id: "chat1", text: "done" });
     const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
@@ -115,7 +115,7 @@ describe("ToolHandler.reply", () => {
 
   test("비활성 + text 비어있음 → prefix 스킵", async () => {
     const tg = fakeTg();
-    const provider = { sessionActive: false, sessionLabel: "backend" };
+    const provider = { sessionActive: false, sessionLabel: "backend", sessionOwnership: "telegram" as const };
     const h = new ToolHandler(tg, fakeConfig(), provider);
     await h.handle("reply", { chat_id: "chat1", text: "" });
     const calls = (tg.sendMessage as ReturnType<typeof mock>).mock.calls;
@@ -126,7 +126,7 @@ describe("ToolHandler.reply", () => {
 
   test("비활성 + label 비어있음 → prefix 스킵", async () => {
     const tg = fakeTg();
-    const provider = { sessionActive: false, sessionLabel: "" };
+    const provider = { sessionActive: false, sessionLabel: "", sessionOwnership: "telegram" as const };
     const h = new ToolHandler(tg, fakeConfig(), provider);
     await h.handle("reply", { chat_id: "chat1", text: "hello" });
     const firstCall = (tg.sendMessage as ReturnType<typeof mock>).mock.calls[0]!;
@@ -146,6 +146,16 @@ describe("ToolHandler.reply", () => {
     const h = new ToolHandler(tg, fakeConfig());
     const r = await h.handle("reply", { chat_id: "chat1", text: "x".repeat(5000), split: "length" });
     expect(r.message_ids?.length).toBeGreaterThan(1);
+  });
+
+  test("SSH ownership → reply 거부 + sendMessage 미호출", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: true, sessionLabel: "backend", sessionOwnership: "ssh" as const };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    const r = await h.handle("reply", { chat_id: "chat1", text: "hello" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/reply blocked/);
+    expect((tg.sendMessage as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   });
 });
 
@@ -168,6 +178,16 @@ describe("ToolHandler.react", () => {
     const r = await h.handle("react", { chat_id: "blocked", message_id: "1", emoji: "👍" });
     expect(r.isError).toBe(true);
   });
+
+  test("SSH ownership → react 거부 + setReaction 미호출", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: true, sessionLabel: "x", sessionOwnership: "ssh" as const };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    const r = await h.handle("react", { chat_id: "chat1", message_id: "55", emoji: "👍" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/react blocked/);
+    expect((tg.setReaction as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  });
 });
 
 // ── edit_message ──────────────────────────────────────────────────────────────
@@ -187,6 +207,16 @@ describe("ToolHandler.edit_message", () => {
     const h = new ToolHandler(tg, fakeConfig(["chat1"]));
     const r = await h.handle("edit_message", { chat_id: "blocked", message_id: "1", text: "x" });
     expect(r.isError).toBe(true);
+  });
+
+  test("SSH ownership → edit_message 거부 + editMessage 미호출", async () => {
+    const tg = fakeTg();
+    const provider = { sessionActive: true, sessionLabel: "x", sessionOwnership: "ssh" as const };
+    const h = new ToolHandler(tg, fakeConfig(), provider);
+    const r = await h.handle("edit_message", { chat_id: "chat1", message_id: "10", text: "new" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/edit_message blocked/);
+    expect((tg.editMessage as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   });
 });
 

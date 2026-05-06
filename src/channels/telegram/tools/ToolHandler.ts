@@ -11,6 +11,7 @@ import {
 } from "./text.ts";
 import { assertAllowedChat } from "../access.ts";
 import { saveAttachment } from "../inbox.ts";
+import type { SessionOwnership } from "../../../core/ipc.ts";
 import * as anomaly from "../../../core/anomaly.ts";
 
 export type McpResult = {
@@ -27,7 +28,13 @@ export type McpResult = {
 export type SessionStateProvider = {
   readonly sessionActive: boolean;
   readonly sessionLabel: string;
+  readonly sessionOwnership: SessionOwnership;
 };
+
+const SSH_BLOCK_MESSAGE =
+  "session is SSH-owned; user is reading the claude TUI directly. " +
+  "Respond as plain transcript text — do NOT call reply/react/edit_message. " +
+  "These tools route to Telegram, which is not the active reader right now.";
 
 export class ToolHandler {
   constructor(
@@ -80,6 +87,8 @@ export class ToolHandler {
   }
 
   private async handleReply(rawArgs: unknown): Promise<McpResult> {
+    const sshBlock = this.assertNotSshOwned("reply");
+    if (sshBlock) return sshBlock;
     const args = ReplyArgs.parse(rawArgs);
     assertAllowedChat(this.config, args.chat_id);
 
@@ -145,6 +154,8 @@ export class ToolHandler {
   }
 
   private async handleReact(rawArgs: unknown): Promise<McpResult> {
+    const sshBlock = this.assertNotSshOwned("react");
+    if (sshBlock) return sshBlock;
     const args = ReactArgs.parse(rawArgs);
     assertAllowedChat(this.config, args.chat_id);
     await this.tg.setReaction(args.chat_id, Number(args.message_id), args.emoji);
@@ -152,10 +163,25 @@ export class ToolHandler {
   }
 
   private async handleEditMessage(rawArgs: unknown): Promise<McpResult> {
+    const sshBlock = this.assertNotSshOwned("edit_message");
+    if (sshBlock) return sshBlock;
     const args = EditArgs.parse(rawArgs);
     assertAllowedChat(this.config, args.chat_id);
     await this.tg.editMessage(args.chat_id, Number(args.message_id), args.text, args.format);
     return { content: [{ type: "text", text: "edited" }] };
+  }
+
+  /**
+   * SSH ownership 게이트. 해당 세션을 현재 SSH/CLI 사용자가 들고 있으면
+   * Telegram 발신 도구를 거부 — 잘못된 채널로 답이 새는 것을 차단.
+   * download_attachment 는 사용자에게 가는 출력이 아니므로 게이트하지 않는다.
+   */
+  private assertNotSshOwned(tool: string): McpResult | undefined {
+    if (this.sessionStateProvider?.sessionOwnership !== "ssh") return undefined;
+    return {
+      isError: true,
+      content: [{ type: "text", text: `${tool} blocked: ${SSH_BLOCK_MESSAGE}` }],
+    };
   }
 
   private async handleDownloadAttachment(rawArgs: unknown): Promise<McpResult> {

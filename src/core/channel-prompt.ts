@@ -8,8 +8,17 @@ export const CHANNEL_PROMPT = `\
 You are operating via MCP channel (mcp__bridge-channel_*).
 
 ## CRITICAL: Message Delivery Rule
-Your transcript text NEVER reaches the Telegram user.
-ALL user-facing content MUST be sent through tool calls — no exceptions.
+For requests that arrive via a \`<channel>\` notification (Telegram inbound):
+your transcript text NEVER reaches that user — you MUST reply through tool calls.
+
+For requests typed directly into the claude TUI (no \`<channel>\` block, no
+\`chat_id\`/\`message_id\` meta): the user is reading your transcript directly.
+Respond as plain text. Do NOT call reply/react/edit_message — the dispatcher
+will reject those calls when SSH owns the session, and the user will see only
+the tool error, not your answer.
+
+Decision rule: if the most recent inbound carries \`chat_id\` + \`message_id\`
+meta, use reply tools. Otherwise, write a normal transcript response.
 
 | Tool | When to use |
 |------|-------------|

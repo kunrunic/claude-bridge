@@ -1,4 +1,4 @@
-import { connectClient, type LineSocket } from "../../core/ipc.ts";
+import { connectClient, type LineSocket, type SessionOwnership } from "../../core/ipc.ts";
 import * as anomaly from "../../core/anomaly.ts";
 
 const RECONNECT_DELAYS_MS = [2_000, 5_000, 10_000];
@@ -19,7 +19,7 @@ export class IpcBridge {
   private sessionId = "";
   private pid = 0;
   private deps: IpcBridgeDeps | undefined;
-  private sessionState: { is_active: boolean; label: string } | undefined;
+  private sessionState: { is_active: boolean; label: string; ownership: SessionOwnership } | undefined;
 
   get sessionActive(): boolean {
     return this.sessionState?.is_active ?? false;
@@ -27,6 +27,12 @@ export class IpcBridge {
 
   get sessionLabel(): string {
     return this.sessionState?.label ?? "";
+  }
+
+  // 초기값 "telegram" — dispatcher 의 첫 session_state push 전까지는 기존 동작
+  // (Telegram 응답 허용). SSH 게이트는 명시적 신호가 도착해야 발동.
+  get sessionOwnership(): SessionOwnership {
+    return this.sessionState?.ownership ?? "telegram";
   }
 
   async connect(socketPath: string, sessionId: string, pid: number, deps: IpcBridgeDeps): Promise<void> {
@@ -73,6 +79,7 @@ export class IpcBridge {
           this.sessionState = {
             is_active: msg.is_active,
             label: msg.label,
+            ownership: msg.ownership,
           };
           break;
         default:

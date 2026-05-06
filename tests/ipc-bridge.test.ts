@@ -124,19 +124,21 @@ describe("IpcBridge", () => {
     const { dir, path } = tmpSocket();
     const server = startServer(path, (ls) => {
       setTimeout(() => {
-        ls.send({ op: "session_state", session_id: "s1", is_active: false, label: "backend" });
+        ls.send({ op: "session_state", session_id: "s1", is_active: false, label: "backend", ownership: "telegram" });
       }, 30);
     });
 
     const bridge = new IpcBridge();
     expect(bridge.sessionActive).toBe(false);
     expect(bridge.sessionLabel).toBe("");
+    expect(bridge.sessionOwnership).toBe("telegram");
 
     await bridge.connect(path, "s1", 1, { emitInbound: () => {}, sendPermissionReply: () => {} });
     await new Promise((r) => setTimeout(r, 100));
 
     expect(bridge.sessionActive).toBe(false);
     expect(bridge.sessionLabel).toBe("backend");
+    expect(bridge.sessionOwnership).toBe("telegram");
 
     bridge.close();
     server.close();
@@ -147,7 +149,7 @@ describe("IpcBridge", () => {
     const { dir, path } = tmpSocket();
     const server = startServer(path, (ls) => {
       setTimeout(() => {
-        ls.send({ op: "session_state", session_id: "s1", is_active: true, label: "x" });
+        ls.send({ op: "session_state", session_id: "s1", is_active: true, label: "x", ownership: "telegram" });
       }, 30);
     });
 
@@ -157,6 +159,26 @@ describe("IpcBridge", () => {
 
     expect(bridge.sessionActive).toBe(true);
     expect(bridge.sessionLabel).toBe("x");
+
+    bridge.close();
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("session_state ownership=ssh → sessionOwnership='ssh'", async () => {
+    const { dir, path } = tmpSocket();
+    const server = startServer(path, (ls) => {
+      setTimeout(() => {
+        ls.send({ op: "session_state", session_id: "s1", is_active: true, label: "x", ownership: "ssh" });
+      }, 30);
+    });
+
+    const bridge = new IpcBridge();
+    expect(bridge.sessionOwnership).toBe("telegram"); // default
+    await bridge.connect(path, "s1", 1, { emitInbound: () => {}, sendPermissionReply: () => {} });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(bridge.sessionOwnership).toBe("ssh");
 
     bridge.close();
     server.close();

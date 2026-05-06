@@ -49,11 +49,18 @@ export type IpcReplySent = {
   message_ids?: number[];
 };
 
+// ownership: 누가 이 세션을 "쓰는" 매체인가.
+//  - "telegram": Telegram active 세션 (또는 active 와 무관한 Telegram 소속 세션)
+//  - "ssh":      SSH/CLI 가 ownership 을 가져간 상태 (registry.noAutoSwitch=true)
+// MCP server (server.ts) 가 reply/react/edit_message 호출 전 게이트로 사용.
+export type SessionOwnership = "telegram" | "ssh";
+
 export type IpcSessionState = {
   op: "session_state";
   session_id: string;
   is_active: boolean;
   label: string;
+  ownership: SessionOwnership;
 };
 
 // handoff — 로컬 claude 세션을 bridge tmux 로 이관. dispatcher 가 받아서
