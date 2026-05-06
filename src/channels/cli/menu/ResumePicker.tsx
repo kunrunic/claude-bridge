@@ -13,8 +13,8 @@
  *   Esc                query 가 있으면 query clear, 없으면 cancel
  */
 
-import { Box, Text, useInput, useStdout } from "ink";
-import { useState, useEffect, useMemo } from "react";
+import { Box, Text, useInput, measureElement, type DOMElement } from "ink";
+import { useState, useEffect, useMemo, useRef } from "react";
 import type { CliRecentInfo } from "../../../core/ipc.ts";
 import { rpc } from "./rpc.ts";
 
@@ -23,8 +23,8 @@ type Props = {
   onCancel: () => void;
 };
 
-// 헤더/검색바/overflow/안내 등 고정 영역 = 약 10 줄. 단말 높이에서 빼고 본문 할당.
-const RESERVED_ROWS = 10;
+// list 영역 가용 줄 수는 ink flex layout 이 분배한 값을 measureElement 로 직접 측정 →
+// chrome 줄 수를 일일이 계산해서 빼는 하드코딩이 사라진다. 첫 frame 측정 전 fallback.
 const MIN_VISIBLE = 5;
 
 export function ResumePicker({ onSelect, onCancel }: Props) {
@@ -33,9 +33,19 @@ export function ResumePicker({ onSelect, onCancel }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
-  const { stdout } = useStdout();
-  const termRows = stdout?.rows ?? 24;
-  const visibleRows = Math.max(MIN_VISIBLE, termRows - RESERVED_ROWS);
+  const listRef = useRef<DOMElement>(null);
+  const [listRows, setListRows] = useState(MIN_VISIBLE + 2);
+
+  // ink flex layout 이 list 박스에 실제 할당한 높이를 매 render 측정. App chrome
+  // 변화(error/info, padding, header)나 터미널 resize 에 자동 적응.
+  useEffect(() => {
+    if (!listRef.current) return;
+    const { height } = measureElement(listRef.current);
+    if (height > 0 && height !== listRows) setListRows(height);
+  });
+
+  // overflowAbove / overflowBelow 슬롯 2 줄을 항목 영역에서 뺀다.
+  const visibleRows = Math.max(MIN_VISIBLE, listRows - 2);
 
   const refresh = (): void => {
     setLoading(true);
@@ -121,7 +131,7 @@ export function ResumePicker({ onSelect, onCancel }: Props) {
   const overflowBelow = filtered.length - sliceEnd;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%" height="100%">
       <Text bold>Resume — 최근 Claude 세션</Text>
       {loading && <Text dimColor>로딩 중...</Text>}
       {error && <Text color="red">{error}</Text>}
@@ -132,13 +142,24 @@ export function ResumePicker({ onSelect, onCancel }: Props) {
           <Text dimColor>  ({filtered.length}/{items.length})</Text>
         </Box>
       )}
-      <Box flexDirection="column" marginTop={1}>
-        {!loading && filtered.length === 0 && !query && (
-          <Text dimColor>(없음 — Claude 가 한 번도 실행되지 않았거나 history 부재)</Text>
-        )}
-        {!loading && filtered.length === 0 && query && <Text dimColor>(매치 없음)</Text>}
-        {overflowAbove > 0 && <Text dimColor>  … ({overflowAbove} 더)</Text>}
-        {visible.map((r, i) => {
+      <Box flexDirection="column" marginTop={1} flexGrow={1} ref={listRef}>
+        {/* flex 가 분배한 가용 높이만큼 빈 줄로 패딩해 출력 줄 수 고정. 모드 전환·필터
+            변동 어느 경우에도 박스 높이가 안 변하므로 잔여물 없음. */}
+        <Text dimColor>{overflowAbove > 0 ? `  … (${overflowAbove} 더)` : " "}</Text>
+        {Array.from({ length: visibleRows }, (_, i) => {
+          const r = visible[i];
+          if (!r) {
+            if (i === 0 && !loading && filtered.length === 0) {
+              return (
+                <Text key="empty" dimColor>
+                  {query
+                    ? "  (매치 없음)"
+                    : "  (없음 — Claude 가 한 번도 실행되지 않았거나 history 부재)"}
+                </Text>
+              );
+            }
+            return <Text key={`pad-${i}`}> </Text>;
+          }
           const realI = sliceStart + i;
           const cursor = realI === idx ? "▶" : " ";
           const proj = r.project.padEnd(20).slice(0, 20);
@@ -155,7 +176,7 @@ export function ResumePicker({ onSelect, onCancel }: Props) {
             </Box>
           );
         })}
-        {overflowBelow > 0 && <Text dimColor>  … ({overflowBelow} 더)</Text>}
+        <Text dimColor>{overflowBelow > 0 ? `  … (${overflowBelow} 더)` : " "}</Text>
       </Box>
       <Box marginTop={1}>
         <Text dimColor>

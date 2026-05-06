@@ -10,7 +10,7 @@
  * list_sessions 는 1.5초 polling. SessionEvent 구독 흐름 도입은 별도 작업.
  */
 
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { useEffect, useState } from "react";
 import { rpc } from "./rpc.ts";
 import { switchToSession, disconnectSelf, killTmuxSession } from "./tmuxCmd.ts";
@@ -53,6 +53,8 @@ export function App() {
   const [error, setError] = useState<string>();
   const [info, setInfo] = useState<string>();
   const spin = useSpinnerFrame();
+  const { stdout } = useStdout();
+  const termRows = stdout?.rows ?? 24;
 
   // 세션 목록 polling.
   useEffect(() => {
@@ -188,7 +190,10 @@ export function App() {
   };
 
   return (
-    <Box flexDirection="column" padding={1}>
+    // 터미널 전체 높이를 외곽 Box 가 점유하고, content 영역이 flexGrow 로 잔여 공간을
+    // 차지. 자식 picker (DirBrowser/ResumePicker) 가 그 안에서 measureElement 로 list
+    // 가용 높이를 측정 → chrome 줄 수를 하드코딩으로 빼지 않고 ink layout 이 분배.
+    <Box flexDirection="column" padding={1} height={termRows}>
       <Box>
         <Text color="green" bold>cb-menu </Text>
         <Text dimColor>· {formatMinimap(sessions, spin)}</Text>
@@ -203,7 +208,7 @@ export function App() {
           <Text color="yellow">{info}</Text>
         </Box>
       )}
-      <Box marginTop={1}>
+      <Box marginTop={1} flexGrow={1}>
         {mode === "sessions" && (
           <SessionList
             sessions={sessions}

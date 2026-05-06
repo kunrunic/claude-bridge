@@ -20,8 +20,8 @@
  *   Esc                query 가 있으면 query clear, 없으면 cancel
  */
 
-import { Box, Text, useInput, useStdout } from "ink";
-import { useState, useMemo, useEffect } from "react";
+import { Box, Text, useInput, measureElement, type DOMElement } from "ink";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -34,8 +34,8 @@ type Props = {
 
 type Entry = { name: string; path: string };
 
-// 헤더 / cwd 표시 / 검색 / overflow / 안내 등 고정 영역 = 약 10 줄.
-const RESERVED_ROWS = 10;
+// list 영역 가용 줄 수는 ink flex layout 이 분배한 값을 measureElement 로 직접 측정 →
+// chrome 줄 수를 일일이 계산해서 빼는 하드코딩이 사라진다. 첫 frame 측정 전 fallback.
 const MIN_VISIBLE = 5;
 
 function listDirs(dir: string, showHidden: boolean): Entry[] {
@@ -66,9 +66,20 @@ export function DirBrowser({ initialCwd, onConfirm, onCancel }: Props) {
   const [cwd, setCwd] = useState(initialCwd ?? homedir());
   const [showHidden, setShowHidden] = useState(false);
   const [query, setQuery] = useState("");
-  const { stdout } = useStdout();
-  const termRows = stdout?.rows ?? 24;
-  const visibleRows = Math.max(MIN_VISIBLE, termRows - RESERVED_ROWS);
+  const listRef = useRef<DOMElement>(null);
+  const [listRows, setListRows] = useState(MIN_VISIBLE + 2);
+
+  // ink flex layout 이 list 박스에 실제 할당한 높이를 매 render 측정. App chrome
+  // 변화(error/info, padding, header)나 터미널 resize 에 자동 적응하므로 RESERVED_ROWS
+  // 같은 정적 상수가 필요 없다.
+  useEffect(() => {
+    if (!listRef.current) return;
+    const { height } = measureElement(listRef.current);
+    if (height > 0 && height !== listRows) setListRows(height);
+  });
+
+  // overflowAbove / overflowBelow 슬롯 2 줄을 항목 영역에서 뺀다 (둘 다 항상 렌더).
+  const visibleRows = Math.max(MIN_VISIBLE, listRows - 2);
   const entries = useMemo(() => listDirs(cwd, showHidden), [cwd, showHidden]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -177,7 +188,7 @@ export function DirBrowser({ initialCwd, onConfirm, onCancel }: Props) {
   const overflowBelow = filtered.length - sliceEnd;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%" height="100%">
       <Text bold>New session — cwd 선택</Text>
       <Box marginTop={1}>
         <Text color="green">▸ </Text>
@@ -190,11 +201,23 @@ export function DirBrowser({ initialCwd, onConfirm, onCancel }: Props) {
           <Text dimColor>  ({filtered.length}/{entries.length})</Text>
         </Box>
       )}
-      <Box flexDirection="column" marginTop={1}>
-        {filtered.length === 0 && !query && <Text dimColor>(빈 디렉토리)</Text>}
-        {filtered.length === 0 && query && <Text dimColor>(매치 없음)</Text>}
-        {overflowAbove > 0 && <Text dimColor>  … ({overflowAbove} 더)</Text>}
-        {visible.map((e, i) => {
+      <Box flexDirection="column" marginTop={1} flexGrow={1} ref={listRef}>
+        {/* flex 가 분배한 가용 높이만큼 빈 줄로 패딩해 출력 줄 수가 항상 listRows 로 고정.
+            Tab 토글이든 query 변동이든 박스 자체 높이는 안 변하므로 ink 의 부분 redraw
+            가 잔여물을 남기지 않는다. */}
+        <Text dimColor>{overflowAbove > 0 ? `  … (${overflowAbove} 더)` : " "}</Text>
+        {Array.from({ length: visibleRows }, (_, i) => {
+          const e = visible[i];
+          if (!e) {
+            if (i === 0 && filtered.length === 0) {
+              return (
+                <Text key="empty" dimColor>
+                  {query ? "  (매치 없음)" : "  (빈 디렉토리)"}
+                </Text>
+              );
+            }
+            return <Text key={`pad-${i}`}> </Text>;
+          }
           const realI = sliceStart + i;
           const cursor = realI === idx ? "▶" : " ";
           const colorProps = realI === idx ? { color: "cyan" as const } : {};
@@ -204,7 +227,7 @@ export function DirBrowser({ initialCwd, onConfirm, onCancel }: Props) {
             </Text>
           );
         })}
-        {overflowBelow > 0 && <Text dimColor>  … ({overflowBelow} 더)</Text>}
+        <Text dimColor>{overflowBelow > 0 ? `  … (${overflowBelow} 더)` : " "}</Text>
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
