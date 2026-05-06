@@ -162,20 +162,24 @@ cb-menu 에서 attach 해 Claude TUI 안에 들어간 상태일 때, F-key 로 �
 
 ## 권장 터미널 / 스크롤
 
-| 터미널 | Shift+Enter | 트랙패드/휠 스크롤 | 비고 |
-|---|---|---|---|
-| **iTerm2** | ✓ | native scrollback | **권장** — tmux attach 후에도 iTerm2 자체 버퍼 사용 |
-| WezTerm / Alacritty / kitty | ✓ | tmux copy-mode | 확장 키 시퀀스 지원 |
-| macOS Terminal.app | ✗ | tmux copy-mode | Shift+Enter 구분 불가 |
-| VSCode 내장 터미널 | ✗ | tmux copy-mode | Shift+Enter 구분 불가 |
+| 터미널 | Shift+Enter | 트랙패드/휠 스크롤 |
+|---|---|---|
+| **iTerm2** | ✓ | native scrollback (모든 history) |
+| WezTerm / Alacritty / kitty | ✓ | native scrollback |
+| macOS Terminal.app | ✗ | native scrollback (휠 동작) |
+| VSCode 내장 터미널 | ✗ | native scrollback |
 
-cb 가 attach 시점에 `TERM_PROGRAM` 을 보고 분기:
+cb 가 tmux 의 alt-screen entry/exit 를 끔 (`set -ga terminal-overrides '*:smcup@:rmcup@'`)
+→ tmux 출력이 터미널의 main buffer 에 그대로 누적되어 어떤 터미널에서든 native
+scrollback 으로 claude 응답 / status 메시지 / 명령 출력 전부 스크롤 가능.
 
-- `iTerm.app` 이면 `mouse off` 유지 → iTerm2 의 native scrollback 그대로 사용 (전체 history 보존)
-- 그 외엔 `mouse on` 으로 wheel → tmux copy-mode 진입. **`q`** 로 빠짐 (vi 모드)
-- 어느 쪽이든 `Ctrl-b [` 로 명시적 copy-mode 진입은 항상 가능
+추가로 iTerm 외 터미널은 `mouse on` 으로 wheel → tmux copy-mode 도 활성. iTerm 은
+native 만 써도 충분하므로 `mouse off` 유지. 둘 다 `Ctrl-b [` 로 명시적 copy-mode
+진입은 항상 가능 (vi 모드, **`q`** 로 빠짐).
 
-> 같은 호스트에 다른 터미널로 동시 접속하면 마지막 attach 의 TERM_PROGRAM 으로 server-wide 옵션이 set 돼 다른 클라이언트에 영향. 보통 한 사람이 한 터미널로 쓰는 패턴이라 문제 없음.
+> 부작용: tmux detach/exit 시 화면이 이전 상태로 복구되지 않고 tmux 내용이 그대로
+> 남음. cb 는 단일 pane 만 운영하므로 시각적 문제 거의 없고, 오히려 history 보존
+> 측면에서 +.
 
 ---
 

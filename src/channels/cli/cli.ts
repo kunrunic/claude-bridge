@@ -67,9 +67,12 @@ const REMOTE_ENTRY_CMD = [
   'command -v tmux >/dev/null 2>&1 || { echo "tmux 가 호스트에 설치돼 있지 않습니다." >&2; exit 1; }',
   'tmux has-session -t "=$MENU_NAME" 2>/dev/null || { echo "cb-menu 세션($MENU_NAME) 미가동 — dispatcher 가 켜져 있는지 확인:" >&2; echo "    ./bin/start.sh" >&2; exit 1; }',
   // start.sh 가 이미 set 한 옵션들 — dispatcher 우회 부팅 케이스 대비 멱등 재설정.
+  // smcup@:rmcup@ 로 alt-screen 끔 → tmux 안 내용이 터미널 main buffer 에 누적되어
+  // iTerm 의 native scrollback 으로 모든 history 스크롤 가능.
   'tmux set -g  extended-keys on 2>/dev/null || true',
   'tmux set -g  history-limit 50000 2>/dev/null || true',
   'tmux set -as terminal-features "*:extkeys" 2>/dev/null || true',
+  'tmux set -ga terminal-overrides "*:smcup@:rmcup@" 2>/dev/null || true',
   'tmux set -wg mode-keys vi 2>/dev/null || true',
   // iTerm2 는 tmux attach 후에도 native scrollback 동작 → mouse off 유지.
   // 그 외 터미널은 mouse on 으로 wheel → copy-mode 진입 (q 로 빠짐).

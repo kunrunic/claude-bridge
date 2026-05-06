@@ -51,8 +51,11 @@ export function setupTmuxKeybindings(): void {
 
   // scrollback / copy-mode UX. mouse on 은 attach 시점에 cli.ts 가 TERM_PROGRAM 보고
   // 분기 set 하므로 여기엔 없음. 나머지는 server-wide 이라 한 번 set 하면 모든 세션 적용.
+  // smcup@:rmcup@ — alt-screen 끔. 터미널 main buffer 에 tmux 출력이 누적되어
+  // iTerm/Terminal.app/VSCode 의 native scrollback 으로 모든 history 스크롤 가능.
   tmux(["set", "-g", "history-limit", "50000"]);
   tmux(["set", "-as", "terminal-features", "*:extkeys"]);
+  tmux(["set", "-ga", "terminal-overrides", "*:smcup@:rmcup@"]);
   tmux(["set", "-wg", "mode-keys", "vi"]);
 
   // F6: 현재 세션의 CB_SESSION_ID 로 set_active_request 전송 후 cb-menu 로 복귀
