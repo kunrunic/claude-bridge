@@ -80,7 +80,9 @@ function handleSpawn(
 ): CliResponse {
   const opts: { cwd?: string; skipPermissions?: boolean; autoSwitch?: boolean } = { autoSwitch: false };
   if (msg.cwd) opts.cwd = msg.cwd;
-  if (msg.skipPermissions) opts.skipPermissions = msg.skipPermissions;
+  // explicit false 도 흡수해야 cb-menu PermissionPrompt 의 "ask each time" 선택이
+  // config.skipPermissions=true 환경에서 무시되지 않는다 (이전 truthy 체크는 false 를 떨궈냈음).
+  if (msg.skipPermissions !== undefined) opts.skipPermissions = msg.skipPermissions;
   const r = deps.sessions.spawn(opts);
   // tmuxName 은 registry 에 spawn 직후 setting 됨. 클라이언트가 즉시 attach 할 수 있도록 응답에 포함.
   const session = deps.registry.get(r.id);

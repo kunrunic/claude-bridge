@@ -116,6 +116,27 @@ describe("handleCliRequest: spawn", () => {
       autoSwitch: false,
     });
   });
+
+  test("skipPermissions=false (PermissionPrompt 'ask each time') 도 명시 전달", () => {
+    // 이전 핸들러는 truthy 체크라 false 를 떨궈 config.skipPermissions 로 fallthrough 됐음.
+    // cb-menu PermissionPrompt 가 'n' 으로 선택한 의도가 그대로 spawn opts 에 반영돼야 함.
+    const sessions = fakeSessions();
+    handleCliRequest(
+      makeRequest({
+        op: "cli_request",
+        command: "spawn",
+        cwd: "/y",
+        skipPermissions: false,
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { registry: new Registry(), sessions: sessions as any },
+    );
+    expect(sessions.spawn.mock.calls[0]![0]).toEqual({
+      cwd: "/y",
+      skipPermissions: false,
+      autoSwitch: false,
+    });
+  });
 });
 
 describe("handleCliRequest: kill", () => {

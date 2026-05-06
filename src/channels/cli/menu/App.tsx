@@ -2,9 +2,10 @@
  * cb-menu 최상위 컴포넌트.
  *
  *   - 'sessions' 모드: SessionList. attach / kill / detach / 모드 전환
- *   - 'new' 모드: DirBrowser. 디렉토리 확정 → spawn → switch-client
- *   - 'resume' 모드: ResumePicker. 선택 → resume RPC → 새 spawn 이 등록되면
- *                    list_sessions 폴링이 픽업, 사용자가 sessions 모드에서 직접 attach
+ *   - 'new' 모드: DirBrowser. cwd 확정 → 'permission' 모드로 전이
+ *   - 'resume' 모드: ResumePicker. 선택 → 'permission' 모드로 전이
+ *   - 'permission' 모드: PermissionPrompt. y/N → spawn 또는 resume RPC 실행
+ *                       (resume 응답엔 tmuxName 없음 — 폴링이 픽업, 사용자가 직접 attach)
  *
  * list_sessions 는 1.5초 polling. SessionEvent 구독 흐름 도입은 별도 작업.
  */
@@ -16,10 +17,15 @@ import { switchToSession, disconnectSelf, killTmuxSession } from "./tmuxCmd.ts";
 import { SessionList } from "./SessionList.tsx";
 import { DirBrowser } from "./DirBrowser.tsx";
 import { ResumePicker } from "./ResumePicker.tsx";
+import { PermissionPrompt } from "./PermissionPrompt.tsx";
 import { useSpinnerFrame } from "./spinner.ts";
 import type { CliSessionInfo } from "../../../core/ipc.ts";
 
-type Mode = "sessions" | "new" | "resume";
+type Mode = "sessions" | "new" | "resume" | "permission";
+
+type Pending =
+  | { kind: "new"; cwd: string }
+  | { kind: "resume"; id: string };
 
 const POLL_MS = 1500;
 
@@ -43,6 +49,7 @@ function formatMinimap(sessions: CliSessionInfo[], spin: string): string {
 export function App() {
   const [mode, setMode] = useState<Mode>("sessions");
   const [sessions, setSessions] = useState<CliSessionInfo[]>([]);
+  const [pending, setPending] = useState<Pending | undefined>(undefined);
   const [error, setError] = useState<string>();
   const [info, setInfo] = useState<string>();
   const spin = useSpinnerFrame();
@@ -94,10 +101,10 @@ export function App() {
     if (r.code !== 0) setError(`switch-client 실패: ${r.stderr.trim()}`);
   };
 
-  const onSpawn = async (cwd: string): Promise<void> => {
-    setInfo(`▶ spawning at ${cwd}...`);
+  const doSpawn = async (cwd: string, skipPermissions: boolean): Promise<void> => {
+    setInfo(`▶ spawning at ${cwd}${skipPermissions ? " (skip-perm)" : ""}...`);
     try {
-      const r = await rpc({ op: "cli_request", command: "spawn", cwd });
+      const r = await rpc({ op: "cli_request", command: "spawn", cwd, skipPermissions });
       if (r.ok && r.data?.kind === "spawn") {
         setInfo(`✓ spawned [${r.data.id}][${r.data.label}] — attaching`);
         // dispatcher 가 새 tmux session 만들 때까지 잠깐 기다림. supervise 가 끝났으면
@@ -114,10 +121,10 @@ export function App() {
     }
   };
 
-  const onResume = async (id: string): Promise<void> => {
-    setInfo(`▶ resuming ${id}...`);
+  const doResume = async (id: string, skipPermissions: boolean): Promise<void> => {
+    setInfo(`▶ resuming ${id}${skipPermissions ? " (skip-perm)" : ""}...`);
     try {
-      const r = await rpc({ op: "cli_request", command: "resume", target: id });
+      const r = await rpc({ op: "cli_request", command: "resume", target: id, skipPermissions });
       if (r.ok && r.data?.kind === "resume") {
         setInfo(r.data.message);
         // resume 응답엔 tmuxName 없음. polling 으로 새 세션이 등록되면 사용자가 직접 attach.
@@ -128,6 +135,33 @@ export function App() {
     } catch (e) {
       setError(String(e));
     }
+  };
+
+  // DirBrowser / ResumePicker 가 확정되면 즉시 RPC 가 아니라 permission 모드로 전이.
+  // pending 에 "어떤 RPC 를 어떤 파라미터로 칠지" 만 보관하고, PermissionPrompt 가
+  // skipPermissions 결정을 합쳐 do{Spawn,Resume} 호출.
+  const onCwdConfirmed = (cwd: string): void => {
+    setPending({ kind: "new", cwd });
+    setMode("permission");
+  };
+
+  const onResumeSelected = (id: string): void => {
+    setPending({ kind: "resume", id });
+    setMode("permission");
+  };
+
+  const onPermissionChoose = (skipPermissions: boolean): void => {
+    const p = pending;
+    setPending(undefined);
+    setMode("sessions");
+    if (!p) return;
+    if (p.kind === "new") void doSpawn(p.cwd, skipPermissions);
+    else void doResume(p.id, skipPermissions);
+  };
+
+  const onPermissionCancel = (): void => {
+    setPending(undefined);
+    setMode("sessions");
   };
 
   const onKill = (s: CliSessionInfo): void => {
@@ -182,14 +216,25 @@ export function App() {
         )}
         {mode === "new" && (
           <DirBrowser
-            onConfirm={(cwd) => void onSpawn(cwd)}
+            onConfirm={onCwdConfirmed}
             onCancel={() => setMode("sessions")}
           />
         )}
         {mode === "resume" && (
           <ResumePicker
-            onSelect={(id) => void onResume(id)}
+            onSelect={onResumeSelected}
             onCancel={() => setMode("sessions")}
+          />
+        )}
+        {mode === "permission" && pending && (
+          <PermissionPrompt
+            summary={
+              pending.kind === "new"
+                ? `▶ new session at ${pending.cwd}`
+                : `▶ resume [${pending.id}]`
+            }
+            onChoose={onPermissionChoose}
+            onCancel={onPermissionCancel}
           />
         )}
       </Box>
