@@ -72,16 +72,14 @@ tmux set -g extended-keys on 2>/dev/null || true
 tmux set-hook -g client-attached "refresh-client" 2>/dev/null || true
 
 # scrollback / copy-mode UX.
-# smcup@:rmcup@ — tmux 의 alt-screen entry/exit 비활성화. 기본은 alt-screen 이라 tmux
-# 안 내용이 터미널의 main buffer 에 안 쌓이고 native scrollback 에 안 잡힘. 이걸 끄면
-# tmux 출력이 main buffer 에 누적 → iTerm/Terminal.app/VSCode 모두 native 스크롤 가능.
-# 부작용: detach 시 tmux 화면이 그대로 남음 (이전 화면으로 복구 안 됨). cb 는 단일
-# pane 운영이라 영향 거의 없고, 오히려 history 보존 측면에서 +.
-# mouse on 은 attach 시점에 cli.ts (REMOTE_ENTRY_CMD) 가 TERM_PROGRAM 보고 분기 set —
-# iTerm2 는 native scrollback 우선이라 mouse off, 그 외는 mouse on 으로 wheel→copy-mode.
+# mouse on — wheel 이벤트를 tmux 가 캡처해 copy-mode 진입 + 스크롤. tmux 가 pane 을
+# scroll-region 으로 redraw 하는 구조라 alt-screen 을 비활성화해도 터미널 native
+# scrollback 에는 안 쌓임. 결국 wheel→copy-mode 가 모든 터미널에서 통일된 정답.
+# 부작용: 텍스트 선택이 tmux 마우스 모드로 가지만 iTerm/wezterm/kitty 등은 Option(⌥)
+# 누르고 드래그하면 native select 가능 — 일반적인 tmux+iTerm 워크플로우.
 tmux set -g  history-limit 50000 2>/dev/null || true
+tmux set -g  mouse on 2>/dev/null || true
 tmux set -as terminal-features "*:extkeys" 2>/dev/null || true
-tmux set -ga terminal-overrides "*:smcup@:rmcup@" 2>/dev/null || true
 tmux set -wg mode-keys vi 2>/dev/null || true
 
 LOG_FILE="$LOG_DIR/$(date +%Y-%m-%d).log"

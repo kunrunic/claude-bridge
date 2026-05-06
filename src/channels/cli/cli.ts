@@ -67,17 +67,13 @@ const REMOTE_ENTRY_CMD = [
   'command -v tmux >/dev/null 2>&1 || { echo "tmux 가 호스트에 설치돼 있지 않습니다." >&2; exit 1; }',
   'tmux has-session -t "=$MENU_NAME" 2>/dev/null || { echo "cb-menu 세션($MENU_NAME) 미가동 — dispatcher 가 켜져 있는지 확인:" >&2; echo "    ./bin/start.sh" >&2; exit 1; }',
   // start.sh 가 이미 set 한 옵션들 — dispatcher 우회 부팅 케이스 대비 멱등 재설정.
-  // smcup@:rmcup@ 로 alt-screen 끔 → tmux 안 내용이 터미널 main buffer 에 누적되어
-  // iTerm 의 native scrollback 으로 모든 history 스크롤 가능.
+  // mouse on 으로 모든 터미널에서 wheel → copy-mode 일관 동작. Native text select 는
+  // iTerm/wezterm 등에서 Option(⌥) + 드래그.
   'tmux set -g  extended-keys on 2>/dev/null || true',
   'tmux set -g  history-limit 50000 2>/dev/null || true',
+  'tmux set -g  mouse on 2>/dev/null || true',
   'tmux set -as terminal-features "*:extkeys" 2>/dev/null || true',
-  'tmux set -ga terminal-overrides "*:smcup@:rmcup@" 2>/dev/null || true',
   'tmux set -wg mode-keys vi 2>/dev/null || true',
-  // iTerm2 는 tmux attach 후에도 native scrollback 동작 → mouse off 유지.
-  // 그 외 터미널은 mouse on 으로 wheel → copy-mode 진입 (q 로 빠짐).
-  // TERM_PROGRAM 은 cmdConnect 에서 ssh 명령 prefix 로 export 해 forward.
-  '[ "$TERM_PROGRAM" = "iTerm.app" ] || tmux set -g mouse on 2>/dev/null || true',
   'exec tmux attach-session -t "=$MENU_NAME"',
 ].join("; ");
 
@@ -97,18 +93,12 @@ async function cmdConnect(name: string): Promise<never> {
   // -t : force tty (tmux + Claude TUI 가 interactive pty 필요).
   // StrictHostKeyChecking=accept-new : 첫 연결 시 호스트키 자동 수락 (이후엔 검증).
   //   사용자가 cb add 시점에 검증 없이 추가하므로 첫 ssh 도 동일 수준으로 자동.
-  // TERM_PROGRAM 은 sshd 의 AcceptEnv 화이트리스트에 보통 없어 SendEnv 로는 거의 안 통함.
-  // 원격 셸의 환경변수로 직접 export 해서 REMOTE_ENTRY_CMD 가 분기 판단 (iTerm vs 그 외).
-  // 영문/숫자/`._-` 외 문자는 sanitize 해 쉘 인용 위험을 제거.
-  const termProgram = (process.env.TERM_PROGRAM ?? "").replace(/[^A-Za-z0-9._-]/g, "");
-  const remoteCmd = `export TERM_PROGRAM='${termProgram}'; ${REMOTE_ENTRY_CMD}`;
-
   const args = [
     "-e", "none",
     "-o", "StrictHostKeyChecking=accept-new",
     "-t",
     ...toSshArgs(entry),
-    remoteCmd,
+    REMOTE_ENTRY_CMD,
   ];
   const child = spawn("ssh", args, { stdio: "inherit" });
   return new Promise<never>((_resolve, reject) => {
