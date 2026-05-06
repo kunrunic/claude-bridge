@@ -107,6 +107,46 @@ claude-bridge 가 cb-menu tmux 세션을 띄우지 않은 상태.
 tail -30 ~/.claude-bridge/anomaly.jsonl
 ```
 
+### ssh 로 띄운 claude 가 매번 login 화면을 띄움 (macOS)
+
+cb 로 새 세션이 떠도 곧바로 OAuth 로그인 화면. GUI 로 띄운 claude.app 은 정상.
+
+**원인 (관찰된 패턴, 추정 포함)**:
+- macOS Keychain 의 `Claude Code-credentials` 항목 ACL 이 GUI claude.app 에만 허용된 상태
+- ssh 로 spawn 된 claude binary 는 ACL partition 밖 → 토큰을 못 읽음
+- 진단 단서: ssh 세션 안에서
+
+  ```bash
+  security find-generic-password -s "Claude Code-credentials" -w; echo "exit=$?"
+  ```
+
+  | exit | 의미 | 해석 |
+  |------|------|------|
+  | 0 + 토큰 출력 | 정상 | ACL 통과 — 다른 원인 의심 |
+  | **36** | `errSecInteractionNotAllowed` | **ACL 거부 + 항목 존재** — 본 항목의 전형 패턴 |
+  | 44 | `errSecItemNotFound` | keychain 에 항목 자체 없음 — claude 가 한 번도 안 썼거나 env var 만 사용 중 |
+
+  ssh 비-interactive 컨텍스트는 keychain GUI 인증을 띄울 수 없으므로 ACL 이 제한적이면 36 으로 떨어진다.
+
+**해결**:
+1. GUI 터미널(claude.app 권한이 있는 환경)에서 OAuth 토큰 발급
+
+   ```bash
+   claude setup-token
+   ```
+
+2. 출력된 토큰을 `~/.zshenv` 에 등록 (`~/.zshrc` 가 아님)
+
+   ```bash
+   export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   ```
+
+3. ssh 재접속 후 `cb new` — 환경변수 경로로 인증돼 keychain 우회
+
+`~/.zshenv` 는 비-interactive / 비-login zsh 인스턴스에도 로드된다. 그래서 tmux 안에서 spawn 된 claude binary 도 이 변수를 그대로 받는다 (`~/.zshrc` 는 interactive 일 때만 로드되므로 동일 효과 안 남).
+
+> 이 항목은 "수정 후 증상 사라짐" 을 관찰한 사례 기반 — exit=36 으로 ACL 거부도 별도 검증됨 (2026-05-06, home). 향후 재발 시 위 진단표로 36/44/0 분기 먼저 확인.
+
 ### `1 MCP server failed` 가 Claude 안에서 보임
 
 MCP 서버(`bridge-channel`) 가 실행에 실패했다.
