@@ -210,12 +210,21 @@ async function cmdDispatcherControl(
     );
   }
 
-  // 원격 PATH 보강 + claude-bridge 디렉터리 자동 탐색 (common 위치 순서로 시도)
+  // repo 위치 결정: 1순위 `cb` 심링크 역추적 → 2순위 알려진 폴더 후보 탐색
   const remoteCmd = [
     'PATH="$HOME/.bun/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"',
     'DIR=""',
-    'for d in ~/claude-bridge ~/claude-bridge2 ~/claude-bridge3; do [ -f "$d/bin/start.sh" ] && DIR="$d" && break; done',
-    '[ -z "$DIR" ] && { echo "✗ claude-bridge 디렉터리를 찾을 수 없음" >&2; exit 1; }',
+    'CB="$(command -v cb 2>/dev/null)"',
+    'if [ -n "$CB" ]; then',
+    '  CB_REAL="$(readlink "$CB" 2>/dev/null || echo "$CB")"',
+    '  case "$CB_REAL" in /*) ;; *) CB_REAL="$(dirname "$CB")/$CB_REAL" ;; esac',
+    '  CAND="$(cd "$(dirname "$(dirname "$CB_REAL")")" 2>/dev/null && pwd)"',
+    '  [ -n "$CAND" ] && [ -f "$CAND/bin/start.sh" ] && DIR="$CAND"',
+    'fi',
+    'if [ -z "$DIR" ]; then',
+    '  for d in ~/claude-bridge ~/claude-bridge2 ~/claude-bridge3; do [ -f "$d/bin/start.sh" ] && DIR="$d" && break; done',
+    'fi',
+    '[ -z "$DIR" ] && { echo "✗ claude-bridge 디렉터리를 찾을 수 없음 (cb 미설치 + 폴더 탐색 실패)" >&2; exit 1; }',
     'cd "$DIR"',
     `bash bin/${action}.sh`,
   ].join("; ");
