@@ -131,7 +131,7 @@ export function ResumePicker({ onSelect, onCancel }: Props) {
   const overflowBelow = filtered.length - sliceEnd;
 
   return (
-    <Box flexDirection="column" width="100%" height="100%">
+    <Box flexDirection="column" flexGrow={1}>
       <Text bold>Resume — 최근 Claude 세션</Text>
       {loading && <Text dimColor>로딩 중...</Text>}
       {error && <Text color="red">{error}</Text>}

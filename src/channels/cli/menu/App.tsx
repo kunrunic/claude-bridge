@@ -208,7 +208,10 @@ export function App() {
           <Text color="yellow">{info}</Text>
         </Box>
       )}
-      <Box marginTop={1} flexGrow={1}>
+      {/* flexDirection="column" 명시 — default(row) 면 cross-axis 가 세로가 되어
+          align-items: stretch 가 자식을 세로로 늘림. PermissionPrompt 의 border Box 가
+          화면 전체로 늘어나는 증상이 생김. */}
+      <Box marginTop={1} flexGrow={1} flexDirection="column">
         {mode === "sessions" && (
           <SessionList
             sessions={sessions}

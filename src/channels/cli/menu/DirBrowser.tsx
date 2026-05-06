@@ -188,7 +188,7 @@ export function DirBrowser({ initialCwd, onConfirm, onCancel }: Props) {
   const overflowBelow = filtered.length - sliceEnd;
 
   return (
-    <Box flexDirection="column" width="100%" height="100%">
+    <Box flexDirection="column" flexGrow={1}>
       <Text bold>New session — cwd 선택</Text>
       <Box marginTop={1}>
         <Text color="green">▸ </Text>
