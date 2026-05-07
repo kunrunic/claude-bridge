@@ -1,5 +1,6 @@
 import { startServer, type IpcMessage } from "../src/core/ipc.ts";
 import * as tmux from "../src/core/tmux/session.ts";
+import { writeMcpConfigFile } from "../src/core/channel-prompt.ts";
 import { existsSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -50,9 +51,15 @@ const ALLOW = [
 const botWorkspaceDir = join(homedir(), ".claude-bridge", "workspaces", "bot");
 mkdirSync(botWorkspaceDir, { recursive: true });
 
+// dispatcher 와 동일한 mcp-config 를 임시로 작성. 이게 없으면
+// `server:bridge-channel` alias 가 dangling 상태로 해석돼 MCP 서버가
+// spawn 되지 않고 hello IPC 가 영영 오지 않는다.
+const mcpConfigFile = join(tmpdir(), `cb-smoke-${process.pid}.mcp.json`);
+writeMcpConfigFile(mcpConfigFile, "bridge-channel");
+
 tmux.newSession({
   name: sessionName,
-  command: `${CLAUDE_BIN} --disallowedTools ${DENY} --allowedTools ${ALLOW} --dangerously-load-development-channels server:bridge-channel`,
+  command: `${CLAUDE_BIN} --disallowedTools ${DENY} --allowedTools ${ALLOW} --mcp-config "${mcpConfigFile}" --dangerously-load-development-channels server:bridge-channel`,
   cwd: botWorkspaceDir,
   env: {
     CB_DISPATCHER_SOCKET: socketPath,
@@ -112,6 +119,9 @@ tmux.killSession(sessionName);
 server.close();
 try {
   unlinkSync(socketPath);
+} catch {}
+try {
+  unlinkSync(mcpConfigFile);
 } catch {}
 
 if (!helloOk) {

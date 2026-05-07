@@ -182,6 +182,11 @@ export class SlashHandler {
         text = `no such session: ${target}`;
       } else {
         registry.setActive(s.id);
+        // Telegram 이 control 을 가져갔으므로 ownership 도 같이 reset.
+        // 빠뜨리면 noAutoSwitch=true 그대로라 dispatcher 가 ownership="ssh" 를
+        // push → IpcBridge SSH 게이트가 발동해 reply/react/edit_message 차단됨
+        // (라벨은 [Telegram] 으로 보이는데 실제 답이 안 가는 모순 상태).
+        registry.updateState(s.id, { noAutoSwitch: false });
         text = `▶ switched to [${s.id}][${s.label}]`;
       }
     } else if (action === "resume" || action === "fork") {

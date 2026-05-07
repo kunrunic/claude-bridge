@@ -415,6 +415,33 @@ describe("SlashHandler", () => {
       expect(tg.editWithKeyboardCalls[0]![2]).toMatch(/▶ switched/);
     });
 
+    test("action='switch' on SSH-owned session resets noAutoSwitch and fires onActiveChanged", async () => {
+      // 회귀 방지: 텔레그램 /switch 가 active 만 바꾸고 noAutoSwitch=true 를
+      // 남겨두면 dispatcher 가 ownership="ssh" 를 push 해 reply 가 차단됨
+      // (라벨은 [Telegram] 인데 실제 응답이 안 가는 모순 상태).
+      const registry = new Registry();
+      const s1 = registry.create("alpha");
+      const s2 = registry.create("beta");
+      registry.setActive(s1.id);
+      registry.updateState(s2.id, { noAutoSwitch: true });  // SSH spawn 시뮬레이션
+      const tg = fakeTelegramClient();
+      const sessions = fakeSessionManager();
+      const onActiveChanged = mock(() => {});
+      const deps: SlashHandlerDeps = {
+        registry,
+        tg,
+        sessions,
+        onActiveChanged,
+      };
+      const handler = new SlashHandler(deps);
+
+      await handler.onSessionAction("switch", s2.id, "chat1", 123);
+
+      expect(registry.active()!.id).toBe(s2.id);
+      expect(registry.get(s2.id)!.noAutoSwitch).toBe(false);
+      expect(onActiveChanged).toHaveBeenCalledWith(s1.id);
+    });
+
     test("action='switch', target='ghost' → editWithKeyboard with 'no such session'", async () => {
       const registry = new Registry();
       const tg = fakeTelegramClient();
