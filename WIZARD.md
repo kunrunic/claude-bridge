@@ -1,17 +1,13 @@
 ---
 mdwiz:
+  # popup 은 '비밀·블로킹 입력'(비번/토큰/passphrase) 전용.
+  # 선택형(Choose [1]:)·확인형(y/n)·비밀 아닌 자유입력은 여기 등록하지 말 것 —
+  # 그런 건 chat 번호 리스트로 묻고 stdin 주입(printf '2\n' | ...) 하거나
+  # 명령 플래그로 회피(ssh -o StrictHostKeyChecking=accept-new)한다.
   prompts:
     - "[Pp]assword:"
     - "Passphrase:"
-    - "Are you sure"
-    - "continue connecting"
-    - "overwrite config\\?"
-    - "Choose \\[1\\]:"
     - "Bot Token:"
-    - "your user_id:"
-    - "PATH 추가\\?"
-    - "지금 설치할까요\\?"
-    - "continue anyway\\?"
   commands:
     - match: "bash bin/setup.sh*"
       inactivity_sec: 10
@@ -42,7 +38,9 @@ mdwiz:
 
 - **home 머신** = dispatcher가 돌아가는 곳 (집 노트북/PC)
 - **office 머신** = `cb` 명령으로 접속하는 클라이언트 (회사 PC, 외출지 등)
-- **연결망** = Tailscale (WireGuard mesh VPN, NAT/CGNAT 무관, 100대 무료)
+- **연결망** = Tailscale (WireGuard mesh VPN, NAT/CGNAT 무관, 100대 무료) — **원격 접속 시에만 필요**
+
+> claude-bridge는 **로컬 전용**(이 머신 안에서만 사용)으로도, **원격 접속**(외부에서 이 머신 제어)으로도 쓸 수 있습니다. 기본은 로컬 전용이며, 원격은 Tailscale + SSH 설정을 추가하면 됩니다.
 
 ---
 
@@ -59,11 +57,13 @@ mdwiz:
 | 항목 | home 머신 (dispatcher 서버) | office 머신 (클라이언트) |
 |---|---|---|
 | dispatcher | ✅ running 정상 / ❌ stopped 문제 | 해당 없음 (무시) |
-| tailscale | ✅ Connected 정상 / ⚠️ offline·없음 주의 | ✅ Connected 정상 / ⚠️ offline·없음 주의 |
+| tailscale | **로컬 전용이면 없어도 정상** / 원격 사용 시 ✅ Connected 필요 | ✅ Connected 정상 / ⚠️ offline·없음 주의 |
 | cb hosts | **없어도 정상** (자기가 서버) | ✅ 등록됨 정상 / ⚠️ 없으면 `cb add` 안내 |
 
 > 현재 머신이 home(서버)인지 office(클라이언트)인지는 dispatcher 실행 여부로 판단:
 > dispatcher running → home 머신으로 간주, cb hosts 없음을 경고로 표시하지 말 것.
+> tailscale 미설치·미연결도 무조건 경고로 표시하지 말 것 — 로컬 전용이면 정상이며,
+> "원격 접속하려면 Tailscale이 필요합니다" 정도의 안내만 덧붙인다.
 
 요약 후 아래 **작업 표**를 보여주고 어떤 작업으로 갈지 chat 으로 묻기 (`AskUserQuestion` 금지 — 번호 선택으로).
 
@@ -73,8 +73,8 @@ mdwiz:
 
 | # | 작업 | 언제 |
 |---|---|---|
-| 1 | **home 머신 셋업** | 새 home 머신 또는 재설치 |
-| 2 | **office 머신 셋업** | 새 office 머신 또는 새 클라이언트 |
+| 1 | **home 머신 셋업** | 새 home 머신 또는 재설치 (로컬 전용 / 원격 접속 선택) |
+| 2 | **office 머신 셋업** | 새 office 머신 또는 새 클라이언트 (원격 접속용) |
 | 3 | **연결 점검** | 접속 안 될 때 / 주기 점검 |
 | 4 | **dispatcher 운영** | 시작 · 정지 · 재시작 · 상태 확인 |
 | 5 | **개발 / 릴리스** | 코드 수정 · 테스트 · 배포 |
@@ -96,50 +96,52 @@ shell_run("echo '=== bun ===' && (bun --version 2>/dev/null || echo 'NOT FOUND')
 - **tmux**: `brew install tmux` (macOS) / `sudo apt install tmux` (Ubuntu)
 - **claude**: https://claude.ai/code 에서 Claude Code CLI 설치
 
-### 1-2. Tailscale 설치
+### 1-2. 사용 모드 선택 (중요)
 
-**macOS**:
-```
-shell_run("brew install --cask tailscale && echo 'Tailscale 설치 완료'")
-```
+claude-bridge는 두 가지 모드로 쓸 수 있습니다. **기본은 로컬 전용**입니다.
 
-**Ubuntu/Debian**:
-```
-shell_run("curl -fsSL https://tailscale.com/install.sh | sh")
-```
+| 모드 | 설명 | 추가 설치 |
+|---|---|---|
+| **로컬 전용** (기본) | 이 머신에서 직접 cb-menu·dispatcher 사용. 같은 머신 안에서만 Claude 세션 제어. | 없음 |
+| **원격 접속** | 외부(회사 PC·외출지 등)에서 Telegram 또는 SSH `cb`로 이 머신을 제어. | Tailscale VPN + SSH 원격 로그인 |
 
-### 1-3. Tailscale 인증 · 연결
+> **원격 접속**은 Tailscale(WireGuard mesh VPN)로 집↔외부 네트워크를 잇고 SSH 원격 로그인을 켜야 동작합니다. 지금 이 머신에서만 쓸 거라면 **건너뛰고 1-4로** — 원격은 나중에 언제든 추가할 수 있습니다.
 
+사용자에게 chat으로 묻기: "**로컬 전용으로 쓸까요, 아니면 원격 접속(Tailscale)까지 설정할까요?**"
+- 로컬 전용 → **1-4로 건너뛰기**
+- 원격 접속 → **1-3 진행**
+
+### 1-3. [원격 접속 시에만] Tailscale + 원격 로그인
+
+> 로컬 전용이면 이 절 전체를 건너뜁니다.
+
+**Tailscale 설치**
+- macOS: `shell_run("brew install --cask tailscale && echo 'Tailscale 설치 완료'")`
+- Ubuntu/Debian: `shell_run("curl -fsSL https://tailscale.com/install.sh | sh")`
+
+**인증·연결**
 ```
 shell_run("sudo tailscale up")
 ```
-
 명령 실행 후 브라우저가 열리면 OAuth (Google/GitHub) 로 로그인. 인증 완료 후:
-
 ```
 shell_run("tailscale status && echo '---' && tailscale ip -4")
 ```
 
-### 1-4. 호스트명 설정 (MagicDNS 용)
-
+**호스트명 설정 (MagicDNS 용)**
 ```
 shell_run("sudo tailscale set --hostname=home && tailscale status | head -3")
 ```
-
 > Tailscale admin console (https://login.tailscale.com/admin) 에서 추가로 확인:
 > - **DNS** 탭 → MagicDNS **ON**
 > - **Machines** 탭 → home device 오른쪽 **⋯** → **Disable key expiry**
 
-### 1-5. macOS 원격 로그인 허용
-
-macOS 한정: **시스템 설정 → 일반 → 공유 → 원격 로그인 ON**
-
-확인:
+**macOS 원격 로그인 허용** — macOS 한정: **시스템 설정 → 일반 → 공유 → 원격 로그인 ON**
 ```
 shell_run("ssh -o StrictHostKeyChecking=no localhost 'echo ok' 2>&1 | head -3")
 ```
 
-### 1-6. claude-bridge 설치
+### 1-4. claude-bridge 설치
 
 ```
 shell_run("bun install && echo 'dependencies OK'")
@@ -148,15 +150,15 @@ shell_run("bash bin/setup.sh")
 
 `setup.sh` 대화형 질문들 (chat으로 안내):
 - Telegram 사용 여부 → 사용 시 bot token / 유저 ID 필요 (popup 으로 입력)
-- CLI only 선택 시 Telegram 설정 생략
+- **로컬 전용이면 CLI only 선택** — Telegram 설정 생략 가능
 
-### 1-7. Dispatcher 시작
+### 1-5. Dispatcher 시작
 
 ```
 shell_run("bash bin/start.sh && sleep 2 && pgrep -f dispatcher && echo 'dispatcher running OK'")
 ```
 
-### 1-8. 설치 점검
+### 1-6. 설치 점검
 
 ```
 shell_run("bash bin/capture.sh 2>/dev/null | head -40")
@@ -174,6 +176,7 @@ shell_run("tmux ls 2>/dev/null | grep cb || echo 'cb 세션 없음'")
 ## 2. office 머신 셋업
 
 > office 머신: `cb` 명령으로 home 에 접속하는 클라이언트. 이 작업은 office 머신에서 실행.
+> office 셋업은 원격 접속을 전제로 하므로 Tailscale이 필요합니다.
 
 ### 2-1. 의존성 확인
 
@@ -323,6 +326,8 @@ Claude Code TUI 안에서 작업. 나갈 때:
 | 로컬 cb 목록 | `shell_run("cb list")` | home 호스트 표시 |
 | 오늘 로그 | `shell_run("ssh home 'tail -20 ~/.claude-bridge/logs/$(date +%Y-%m-%d).log 2>/dev/null || echo no log'")`  | 정상 실행 로그 |
 
+> 로컬 전용 모드면 Tailscale·SSH·home ping 행은 해당 없음 — dispatcher 상태 / cb-menu 세션 / 로그만 점검.
+
 ---
 
 ## 4. Dispatcher 운영
@@ -391,5 +396,6 @@ Claude Code TUI 안에서 작업. 나갈 때:
 - 성공 → 한 줄 요약 / 실패 → tail 풀로 표시 + 원인 분석
 - 다단계 진행 시: `✅ / ❌` 체크리스트 형태로 보고
 - home 사용자명 등 필요 정보: chat 으로 물어보기 (비번·토큰은 popup 자동 처리)
+- **선택형(1/2 택1)·확인형(y/n) 프롬프트는 popup 금지** — 대화형 스크립트는 소스를 먼저 읽어 선택지를 파악하고, chat 번호 리스트로 물어 답을 받은 뒤 stdin 주입(`printf '2\n' | bash bin/setup.sh`)하거나 명령 플래그로 회피. popup 은 비밀·블로킹 입력 전용.
 - **커밋은 사용자가 명시적으로 요청할 때만** — 기능 미검증 상태 커밋 금지
 - `git push` 도 명시적 요청 시에만
