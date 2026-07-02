@@ -79,6 +79,16 @@ export function isReservedName(name: string): boolean {
 }
 
 /**
+ * 등록된 호스트가 로컬 머신을 가리키는지 판정. localhost / 127.0.0.1 / ::1
+ * (대소문자·앞뒤 공백 무시). 로컬이면 cb 가 ssh 를 건너뛰고 직접 로컬 tmux 에
+ * attach 하거나 로컬에서 dispatcher 스크립트를 실행한다.
+ */
+export function isLocalHost(entry: HostEntry): boolean {
+  const h = entry.host?.trim().toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
+/**
  * 호스트 이름 → ssh 인자 배열로 변환.
  *  ["-p", "2222", "-i", "/path/to/key", "user@host"]
  * 비어있는 옵션은 생략.

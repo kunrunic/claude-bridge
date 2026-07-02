@@ -26,12 +26,15 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import {
   loadHosts,
   saveHosts,
   getHost,
   isReservedName,
+  isLocalHost,
   toSshArgs,
   syncSshConfig,
   type HostEntry,
@@ -40,6 +43,18 @@ import {
 function fail(msg: string, code = 1): never {
   console.error(msg);
   process.exit(code);
+}
+
+/**
+ * child process 를 stdio inherit 로 spawn 하고, 종료되면 그 exit code 로 cb
+ * 프로세스도 종료한다. ssh / bash / tmux TUI 를 그대로 사용자 터미널에 인계.
+ */
+function spawnInherit(cmd: string, args: string[]): Promise<never> {
+  const child = spawn(cmd, args, { stdio: "inherit" });
+  return new Promise<never>((_resolve, reject) => {
+    child.on("exit", (code) => process.exit(code ?? 0));
+    child.on("error", (e) => reject(new Error(`${cmd} failed: ${String(e)}`)));
+  });
 }
 
 // ── ssh 진입 ────────────────────────────────────────────────────────────────
@@ -77,6 +92,31 @@ const REMOTE_ENTRY_CMD = [
   'exec tmux attach-session -t "=$MENU_NAME"',
 ].join("; ");
 
+// cli.ts 실제 위치 기준 repo root (src/channels/cli/cli.ts → ../../..).
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+/** 셸에 안전하게 넘기기 위한 작은따옴표 quoting. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * 로컬 connect 전용 진입 명령. cb-menu 세션이 없으면 dispatcher 를 자동 기동하고
+ * (bin/start.sh), 세션이 뜰 때까지 최대 ~10초 대기한 뒤 REMOTE_ENTRY_CMD 로 attach.
+ * 원격은 ssh 재접속이 얽혀 자동 기동이 애매하므로 로컬(localhost)에만 적용한다.
+ */
+const LOCAL_ENTRY_CMD = [
+  'MENU_NAME="cb${CB_INSTANCE:+-$CB_INSTANCE}-menu"',
+  'command -v tmux >/dev/null 2>&1 || { echo "tmux 가 설치돼 있지 않습니다." >&2; exit 1; }',
+  'if ! tmux has-session -t "=$MENU_NAME" 2>/dev/null; then',
+  '  echo "dispatcher/cb-menu 미가동 — 자동 시작 중..." >&2',
+  `  bash ${shq(join(REPO_ROOT, "bin", "start.sh"))} || { echo "✗ dispatcher 자동 시작 실패" >&2; exit 1; }`,
+  '  for _i in $(seq 1 50); do tmux has-session -t "=$MENU_NAME" 2>/dev/null && break; sleep 0.2; done',
+  '  tmux has-session -t "=$MENU_NAME" 2>/dev/null || { echo "✗ cb-menu 가 시간 내 뜨지 않음 — 로그 확인" >&2; exit 1; }',
+  'fi',
+  REMOTE_ENTRY_CMD,
+].join("\n");
+
 async function cmdConnect(name: string): Promise<never> {
   const entry = getHost(name);
   if (!entry) {
@@ -86,6 +126,12 @@ async function cmdConnect(name: string): Promise<never> {
         Object.keys(loadHosts().hosts).map((n) => `  · ${n}`).join("\n") +
         `\n호스트 등록: cb add ${name}`,
     );
+  }
+  // 로컬 호스트(localhost/127.0.0.1/::1)면 ssh 를 건너뛰고 로컬 login shell 에서
+  // 바로 tmux attach. ssh 인증(키/비번) · sshd 없이 `cb <name>` 하나로 붙고,
+  // cb-menu 가 없으면 dispatcher 를 자동 기동한 뒤 attach (LOCAL_ENTRY_CMD).
+  if (isLocalHost(entry)) {
+    return spawnInherit("bash", ["-c", LOCAL_ENTRY_CMD]);
   }
   // -e none: ssh escape character 비활성. default(~) 가 newline 후 첫 char 만 처리하지만,
   //   line discipline / pty mode 에 따라 일부 control 키 (Ctrl-b 포함) 가 ssh client 에서
@@ -100,11 +146,7 @@ async function cmdConnect(name: string): Promise<never> {
     ...toSshArgs(entry),
     REMOTE_ENTRY_CMD,
   ];
-  const child = spawn("ssh", args, { stdio: "inherit" });
-  return new Promise<never>((_resolve, reject) => {
-    child.on("exit", (code) => process.exit(code ?? 0));
-    child.on("error", (e) => reject(new Error(`ssh failed: ${String(e)}`)));
-  });
+  return spawnInherit("ssh", args);
 }
 
 // ── add (대화형 + 플래그) ────────────────────────────────────────────────────
@@ -217,7 +259,10 @@ async function cmdDispatcherControl(
     );
   }
 
-  // repo 위치 결정: 1순위 `cb` 심링크 역추적 → 2순위 알려진 폴더 후보 탐색
+  // repo 위치 결정: 1순위 `cb` 심링크 역추적 → 2순위 알려진 폴더 후보 탐색.
+  // if/then/fi 여러 줄을 포함하므로 '; ' 가 아니라 newline 으로 이어야 한다
+  // ('if ...; then' 뒤에 '; ' 가 붙으면 'then;' 이 되어 bash/zsh 문법 오류).
+  // ssh · 로컬 bash -c 모두 multiline script 를 정상 실행한다.
   const remoteCmd = [
     'PATH="$HOME/.bun/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"',
     'DIR=""',
@@ -234,20 +279,19 @@ async function cmdDispatcherControl(
     '[ -z "$DIR" ] && { echo "✗ claude-bridge 디렉터리를 찾을 수 없음 (cb 미설치 + 폴더 탐색 실패)" >&2; exit 1; }',
     'cd "$DIR"',
     `bash bin/${action}.sh`,
-  ].join("; ");
+  ].join("\n");
 
+  // 로컬 호스트면 ssh 없이 로컬에서 바로 dispatcher 스크립트 실행. remoteCmd 는
+  // cb 심링크 역추적으로 repo 를 찾으므로 로컬 login shell 에서도 그대로 동작한다.
+  if (isLocalHost(entry)) {
+    return spawnInherit("bash", ["-c", remoteCmd]);
+  }
   const args = [
     "-o", "StrictHostKeyChecking=accept-new",
     ...toSshArgs(entry),
     remoteCmd,
   ];
-  const child = spawn("ssh", args, { stdio: "inherit" });
-  return new Promise((resolve, reject) => {
-    child.on("exit", (code) => {
-      process.exit(code ?? 0);
-    });
-    child.on("error", (e) => reject(new Error(`ssh failed: ${String(e)}`)));
-  });
+  return spawnInherit("ssh", args);
 }
 
 // ── list / remove / help ────────────────────────────────────────────────────
