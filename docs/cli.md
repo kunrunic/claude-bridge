@@ -71,6 +71,21 @@ cb <name>          # 예: cb home
 내부적으로 `ssh -t <name> 'tmux attach -t cb-menu'` 와 같다.
 호스트의 cb-menu (상시 실행 중인 tmux 세션) 에 바로 attach 한다.
 
+#### 같은 머신에서 쓰기 — `cb localhost`
+
+host 가 로컬(`localhost` / `127.0.0.1` / `::1`)로 등록된 경우, `cb` 는 **SSH 를
+건너뛰고 로컬 tmux 에 직접 attach** 한다. sshd·키·비번 설정이 필요 없다.
+
+```bash
+cb localhost       # SSH 없이 바로 cb-menu 진입
+```
+
+게다가 cb-menu 가 아직 없으면 (dispatcher 미기동) **자동으로 `bin/start.sh` 를
+실행해 dispatcher 를 띄운 뒤 attach** 한다. 즉 아무것도 안 띄운 상태에서도
+`cb localhost` 한 번이면 기동 + 접속이 끝난다.
+
+> `cb start/stop/restart localhost` 도 로컬이면 SSH 없이 로컬에서 스크립트를 실행한다.
+
 ### 원격에서 claude-bridge 제어
 
 호스트에 SSH 셸을 열지 않고도 claude-bridge 를 제어:

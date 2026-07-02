@@ -38,11 +38,14 @@ cd claude-bridge && mdwiz
 
 | | Telegram bot | cb CLI |
 |---|---|---|
-| **어디서** | 폰, 어디든 메신저 되는 곳 | 노트북·iPad 터미널 |
-| **모습** | 채팅창에 메시지 · Allow/Deny 버튼 · 진행 이모지 | `cb home` 한 번에 호스트의 native Claude TUI |
+| **어디서** | 폰, 어디든 메신저 되는 곳 | 노트북·iPad 터미널 (로컬 & 원격) |
+| **모습** | 채팅창에 메시지 · Allow/Deny 버튼 · 진행 이모지 | `cb <host>` 한 번에 호스트의 native Claude TUI |
 | **장점** | 키보드 없이도 됨, 푸시 알림 | 0ms 지연, vim·scrollback·복붙 그대로 |
 
 둘 다 동시에 써도 된다. 같은 세션을 양쪽에서 봐도 되고, 채널별로 다른 세션을 운영해도 된다.
+
+> 💻 **같은 머신에서 쓸 땐 `cb localhost`** — SSH·키·비번 없이 바로 `cb-menu` 에 붙는다.
+> dispatcher 가 꺼져 있으면 **자동으로 기동한 뒤 접속**하므로, 아무것도 안 띄운 상태에서도 `cb localhost` 한 번이면 끝이다.
 
 ---
 
