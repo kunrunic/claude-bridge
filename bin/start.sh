@@ -88,10 +88,32 @@ if [ "$FOREGROUND" = "1" ]; then
   exec bun run src/dispatcher.ts
 fi
 
-# background
-nohup bun run src/dispatcher.ts >> "$LOG_FILE" 2>&1 &
-BOT_PID=$!
-disown "$BOT_PID" 2>/dev/null || true
+# background — mdwiz/PTY 안전: 새 세션으로 분리해 제어터미널 SIGHUP 을 차단.
+# start.sh 를 '명령 단위 PTY'(예: mdwiz shell_run) 에서 돌려도 dispatcher 가
+# hangup 으로 죽지 않도록 setsid 로 세션 리더화하고 stdin 을 /dev/null 로 뗀다.
+# macOS 엔 setsid 명령이 없어 perl(POSIX::setsid) 로 처리하며, fork 후 자식에서
+# setsid 를 호출해야 EPERM(그룹 리더) 을 피한다. exec 로 PID 가 유지되므로
+# 부모가 출력하는 자식 PID 가 곧 dispatcher(bun) 의 PID 다.
+if command -v perl >/dev/null 2>&1; then
+  BOT_PID=$(perl -e '
+    my $pid = fork;
+    die "fork: $!\n" unless defined $pid;
+    if ($pid) { print "$pid\n"; exit 0; }
+    require POSIX; POSIX::setsid() or die "setsid: $!\n";
+    exec(@ARGV) or die "exec: $!\n";
+  ' -- bash -c "exec bun run src/dispatcher.ts </dev/null >> '$LOG_FILE' 2>&1")
+else
+  # perl 없는 환경 fallback — 명령단위 PTY 에선 SIGHUP 으로 죽을 수 있음.
+  echo "  ⚠️  perl 없음 — nohup fallback (제어터미널 종료 시 SIGHUP 위험)" >&2
+  nohup bun run src/dispatcher.ts </dev/null >> "$LOG_FILE" 2>&1 &
+  BOT_PID=$!
+  disown "$BOT_PID" 2>/dev/null || true
+fi
+
+if [ -z "${BOT_PID:-}" ]; then
+  echo "✗ failed to launch — see $LOG_FILE" >&2
+  exit 1
+fi
 echo "$BOT_PID" > "$PID_FILE"
 
 sleep 1

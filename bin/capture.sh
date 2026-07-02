@@ -13,7 +13,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CB_HOME="${CB_HOME:-$HOME/.claude-bridge}"
-PID_FILE="$CB_HOME/telegram/bot.pid"
+# dispatcher.pid : start.sh/stop.sh 가 기록하는 dispatcher 프로세스 PID (모드 무관, CLI-only 포함)
+# telegram/bot.pid : bridge(telegram) 모드 polling lock — CLI-only 에선 생성되지 않음
+DISPATCHER_PID_FILE="$CB_HOME/dispatcher.pid"
+BOT_PID_FILE="$CB_HOME/telegram/bot.pid"
 ANOMALY_LOG="$CB_HOME/anomaly.jsonl"
 REGISTRY_PATH="$CB_HOME/registry.json"
 
@@ -107,10 +110,18 @@ fi
 
 # ── default: status overview ────────────────────────────────────
 echo "── dispatcher ──"
-if [ -f "$PID_FILE" ]; then
-  PID=$(cat "$PID_FILE")
+# dispatcher.pid 를 우선 확인 (모드 무관). 없으면 bridge 모드의 bot.pid 로 폴백.
+if [ -f "$DISPATCHER_PID_FILE" ]; then
+  PID=$(cat "$DISPATCHER_PID_FILE")
   if kill -0 "$PID" 2>/dev/null; then
     echo "  PID=$PID (running)"
+  else
+    echo "  PID=$PID (stale — file exists but process gone)"
+  fi
+elif [ -f "$BOT_PID_FILE" ]; then
+  PID=$(cat "$BOT_PID_FILE")
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "  PID=$PID (running, via telegram/bot.pid)"
   else
     echo "  PID=$PID (stale — file exists but process gone)"
   fi
